@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
 class CodeChunk:
-    """Represents a chunk of code for later embedding and retrieval."""
+    """A structural chunk of Python code extracted from a source file."""
 
-    file_path: Path
+    id: str
+    file_path: str
+    chunk_type: Literal["module", "class", "function", "method"]
+    name: str
+    parent: str | None
     start_line: int
     end_line: int
-    content: str
-
+    source_code: str
+    imports: list[str]
+    dependencies: list[str]

@@ -13,6 +13,8 @@ class RepoScanner:
         {
             ".git",
             ".venv",
+            ".cache",
+            ".pytest_tmp",
             "__pycache__",
             "node_modules",
             "dist",

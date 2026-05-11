@@ -30,6 +30,8 @@ packages = ["src/codescope"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--basetemp=.pytest_tmp"
+cache_dir = ".cache/pytest"
 
 [tool.ruff]
 line-length = 100

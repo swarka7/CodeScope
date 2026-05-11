@@ -2,8 +2,10 @@
 
 CodeScope is a production-style, AI-powered codebase intelligence system.
 
-This repository starts with a clean foundation and a first working component: a repository scanner that discovers
-Python files while skipping common build/virtualenv directories.
+This repository starts with a clean foundation and working core components:
+
+- Repository scanner that discovers Python files while skipping common build/virtualenv directories
+- AST-based structural chunk extraction (classes, functions, methods, and imports)
 
 ## Setup
 
@@ -31,6 +33,12 @@ Optional (future milestones):
 
 ```bash
 python -m codescope.cli scan <repo_path>
+```
+
+## Extract chunks
+
+```bash
+python -m codescope.cli chunks <repo_path>
 ```
 
 ## Run tests

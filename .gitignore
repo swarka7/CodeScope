@@ -19,9 +19,11 @@ dist/
 
 # Test / tooling caches
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/
 .mypy_cache/
 .tox/
+.cache/
 .coverage
 coverage.xml
 htmlcov/
