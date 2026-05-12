@@ -41,7 +41,10 @@ class RepoScanner:
             try:
                 for child in current_dir.iterdir():
                     if child.is_dir():
-                        if child.name in self.excluded_dir_names:
+                        if (
+                            child.name in self.excluded_dir_names
+                            or child.name.startswith(".pytest_tmp")
+                        ):
                             continue
                         stack.append(child)
                         continue

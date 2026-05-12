@@ -7,7 +7,7 @@ name = "codescope"
 version = "0.1.0"
 description = "Production-style AI-powered codebase intelligence system (scanner-first foundation)."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
@@ -30,7 +30,6 @@ packages = ["src/codescope"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--basetemp=.pytest_tmp"
 cache_dir = ".cache/pytest"
 
 [tool.ruff]

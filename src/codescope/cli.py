@@ -5,9 +5,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from codescope.embeddings.embedder import Embedder
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
 from codescope.scanner.repo_scanner import RepoScanner
+from codescope.vectorstore.memory_store import MemoryStore
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -21,6 +23,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "chunks", help="Extract structural code chunks from a repository"
     )
     chunks_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+
+    search_parser = subparsers.add_parser("search", help="Semantic search over extracted chunks")
+    search_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+    search_parser.add_argument("query", type=str, help="Search query text")
+    search_parser.add_argument("--top-k", type=int, default=5, help="Number of results to return")
 
     return parser
 
@@ -81,6 +88,57 @@ def _handle_chunks(repo_path: Path) -> int:
     return 0
 
 
+def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
+    scanner = RepoScanner()
+    try:
+        files = scanner.scan(repo_path)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    parser = AstParser()
+    chunker = Chunker()
+
+    chunks = []
+    for file_path in files:
+        parsed = parser.parse_file(file_path)
+        chunks.extend(chunker.extract_chunks(parsed))
+
+    if not chunks:
+        print("No chunks found")
+        return 0
+
+    embedder = Embedder()
+    store = MemoryStore()
+
+    try:
+        embeddings = embedder.embed_chunks(chunks)
+        query_embedding = embedder.embed_text(query)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    store.add(chunks, embeddings)
+    results = store.search(query_embedding, top_k=top_k)
+
+    for result in results:
+        chunk = result.chunk
+        if chunk.chunk_type == "method" and chunk.parent:
+            chunk_name = f"{chunk.parent}.{chunk.name}"
+        else:
+            chunk_name = chunk.name
+
+        try:
+            display_path = Path(chunk.file_path).relative_to(repo_path).as_posix()
+        except ValueError:
+            display_path = chunk.file_path
+
+        location = f"{display_path}:{chunk.start_line}-{chunk.end_line}"
+        print(f"[{chunk.chunk_type}] {chunk_name} {location} score={result.score:.4f}")
+
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -89,6 +147,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "chunks":
         return _handle_chunks(args.repo_path)
+
+    if args.command == "search":
+        return _handle_search(args.repo_path, args.query, args.top_k)
 
     raise AssertionError(f"Unhandled command: {args.command}")
 

@@ -41,6 +41,20 @@ python -m codescope.cli scan <repo_path>
 python -m codescope.cli chunks <repo_path>
 ```
 
+## Semantic search
+
+Install the embeddings extra (uses `sentence-transformers` locally):
+
+```bash
+python -m pip install -e ".[ai]"
+```
+
+Then search:
+
+```bash
+python -m codescope.cli search <repo_path> "your query"
+```
+
 ## Run tests
 
 ```bash
