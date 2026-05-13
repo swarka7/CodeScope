@@ -16,6 +16,7 @@ class Chunker:
 
         file_path = parsed_file.file_path.as_posix()
         imports = _extract_imports(parsed_file.module)
+        known_defs = _extract_known_definitions(parsed_file.module)
         source = parsed_file.source
 
         chunks: list[CodeChunk] = []
@@ -28,6 +29,7 @@ class Chunker:
                         file_path=file_path,
                         source=source,
                         imports=imports,
+                        known_defs=known_defs,
                     )
                 )
             elif isinstance(node, ast.ClassDef):
@@ -40,6 +42,7 @@ class Chunker:
                         file_path=file_path,
                         source=source,
                         imports=imports,
+                        known_defs=known_defs,
                     )
                 )
 
@@ -73,10 +76,16 @@ def _format_from_module(module: str | None, level: int) -> str:
 
 
 def _chunk_function(
-    *, node: ast.FunctionDef | ast.AsyncFunctionDef, file_path: str, source: str, imports: list[str]
+    *,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    file_path: str,
+    source: str,
+    imports: list[str],
+    known_defs: set[str],
 ) -> CodeChunk:
     start_line, end_line = _node_span(node)
     source_code = _slice_source(source=source, start_line=start_line, end_line=end_line)
+    dependencies = _extract_dependencies(node=node, known_defs=known_defs)
     chunk_id = _make_chunk_id(
         file_path=file_path,
         chunk_type="function",
@@ -95,7 +104,7 @@ def _chunk_function(
         end_line=end_line,
         source_code=source_code,
         imports=list(imports),
-        dependencies=[],
+        dependencies=dependencies,
     )
 
 
@@ -127,7 +136,12 @@ def _chunk_class(
 
 
 def _chunk_methods(
-    *, node: ast.ClassDef, file_path: str, source: str, imports: list[str]
+    *,
+    node: ast.ClassDef,
+    file_path: str,
+    source: str,
+    imports: list[str],
+    known_defs: set[str],
 ) -> list[CodeChunk]:
     chunks: list[CodeChunk] = []
     for stmt in node.body:
@@ -136,6 +150,7 @@ def _chunk_methods(
 
         start_line, end_line = _node_span(stmt)
         source_code = _slice_source(source=source, start_line=start_line, end_line=end_line)
+        dependencies = _extract_dependencies(node=stmt, known_defs=known_defs)
         chunk_id = _make_chunk_id(
             file_path=file_path,
             chunk_type="method",
@@ -155,10 +170,91 @@ def _chunk_methods(
                 end_line=end_line,
                 source_code=source_code,
                 imports=list(imports),
-                dependencies=[],
+                dependencies=dependencies,
             )
         )
     return chunks
+
+
+def _extract_known_definitions(module: ast.Module) -> set[str]:
+    known: set[str] = set()
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            known.add(node.name)
+
+        if isinstance(node, ast.ClassDef):
+            for stmt in node.body:
+                if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+                    known.add(stmt.name)
+    return known
+
+
+def _extract_dependencies(
+    *, node: ast.FunctionDef | ast.AsyncFunctionDef, known_defs: set[str]
+) -> list[str]:
+    extractor = _DependencyExtractor(known_defs=known_defs)
+    extractor.visit(node)
+    return extractor.dependencies
+
+
+class _DependencyExtractor(ast.NodeVisitor):
+    def __init__(self, *, known_defs: set[str]) -> None:
+        self._known_defs = known_defs
+        self._seen: set[str] = set()
+        self.dependencies: list[str] = []
+
+    def _add(self, value: str) -> None:
+        if not value:
+            return
+        if value in self._seen:
+            return
+        self._seen.add(value)
+        self.dependencies.append(value)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        for dep in _call_target_variants(node.func):
+            self._add(dep)
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and node.id in self._known_defs:
+            self._add(node.id)
+        self.generic_visit(node)
+
+
+def _call_target_variants(expr: ast.expr) -> list[str]:
+    if isinstance(expr, ast.Name):
+        return [expr.id]
+
+    if isinstance(expr, ast.Attribute):
+        chain = _format_attribute_chain(expr)
+        if chain is None:
+            return [expr.attr]
+
+        variants = [chain, expr.attr]
+        if chain.startswith("self."):
+            variants.append(chain.removeprefix("self."))
+        elif chain.startswith("cls."):
+            variants.append(chain.removeprefix("cls."))
+        return variants
+
+    return []
+
+
+def _format_attribute_chain(attr: ast.Attribute) -> str | None:
+    parts: list[str] = [attr.attr]
+    current: ast.expr = attr.value
+
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        parts.reverse()
+        return ".".join(parts)
+
+    return None
 
 
 def _node_span(node: ast.AST) -> tuple[int, int]:

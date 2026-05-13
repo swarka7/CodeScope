@@ -6,8 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from codescope.embeddings.embedder import Embedder
+from codescope.graph.dependency_graph import DependencyGraph
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
+from codescope.retrieval.dependency_aware import enrich_with_related
 from codescope.scanner.repo_scanner import RepoScanner
 from codescope.vectorstore.memory_store import MemoryStore
 
@@ -119,7 +121,9 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
         return 2
 
     store.add(chunks, embeddings)
-    results = store.search(query_embedding, top_k=top_k)
+    semantic_results = store.search(query_embedding, top_k=top_k)
+    graph = DependencyGraph(chunks)
+    results = enrich_with_related(query=query, semantic_results=semantic_results, graph=graph)
 
     for result in results:
         chunk = result.chunk
@@ -134,7 +138,12 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
             display_path = chunk.file_path
 
         location = f"{display_path}:{chunk.start_line}-{chunk.end_line}"
-        print(f"[{chunk.chunk_type}] {chunk_name} {location} score={result.score:.4f}")
+        kind_tag = f"[{result.kind}]".ljust(10)
+        type_tag = f"[{chunk.chunk_type}]"
+        if result.kind == "semantic" and result.score is not None:
+            print(f"{kind_tag} {type_tag} {chunk_name} {location} score={result.score:.2f}")
+        else:
+            print(f"{kind_tag} {type_tag} {chunk_name} {location}")
 
     return 0
 
