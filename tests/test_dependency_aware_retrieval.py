@@ -219,6 +219,89 @@ def test_duplicates_are_avoided_across_semantic_sources() -> None:
     assert [r.chunk.id for r in related] == [shared.id]
 
 
+def test_weak_infrastructure_related_chunks_are_filtered_out() -> None:
+    semantic = _chunk(
+        name="scan_repo",
+        chunk_type="function",
+        dependencies=["IndexStore.exists"],
+        file_path="scanner/repo_scanner.py",
+    )
+    infra = _chunk(
+        name="exists",
+        parent="IndexStore",
+        chunk_type="method",
+        dependencies=[],
+        file_path="src/codescope/indexing/index_store.py",
+    )
+
+    graph = DependencyGraph([semantic, infra])
+    semantic_results = [SearchResult(chunk=semantic, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="repository scanner",
+        semantic_results=semantic_results,
+        graph=graph,
+    )
+
+    assert [r.kind for r in enriched] == ["semantic"]
+
+
+def test_exact_dependency_matches_are_ranked_higher() -> None:
+    semantic = _chunk(
+        name="main",
+        chunk_type="function",
+        dependencies=["Repo.save", "helper"],
+        file_path="module.py",
+    )
+    helper = _chunk(
+        name="helper",
+        chunk_type="function",
+        dependencies=[],
+        file_path="module.py",
+    )
+    save = _chunk(
+        name="save",
+        parent="Repo",
+        chunk_type="method",
+        dependencies=[],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([semantic, helper, save])
+    semantic_results = [SearchResult(chunk=semantic, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="main",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_related=2,
+    )
+
+    related_ids = [r.chunk.id for r in enriched if r.kind == "related"]
+    assert related_ids == [helper.id, save.id]
+
+
+def test_semantic_results_remain_first() -> None:
+    helper = _chunk(name="helper", chunk_type="function", dependencies=[], file_path="app.py")
+    main = _chunk(
+        name="main",
+        chunk_type="function",
+        dependencies=["helper"],
+        file_path="app.py",
+    )
+    other = _chunk(name="other", chunk_type="function", dependencies=[], file_path="other.py")
+
+    graph = DependencyGraph([main, helper, other])
+    semantic_results = [
+        SearchResult(chunk=main, score=0.9),
+        SearchResult(chunk=other, score=0.8),
+    ]
+
+    enriched = enrich_with_related(query="main", semantic_results=semantic_results, graph=graph)
+
+    assert [r.kind for r in enriched[:2]] == ["semantic", "semantic"]
+
+
 def _chunk(
     *,
     name: str,
