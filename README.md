@@ -55,6 +55,30 @@ Then search:
 python -m codescope.cli search <repo_path> "your query"
 ```
 
+## Diagnose demo (buggy calculator)
+
+This repo includes a tiny intentionally broken example project at `examples/buggy_calculator/`.
+
+Make sure you have embeddings installed:
+
+```bash
+python -m pip install -e ".[ai]"
+```
+
+Index it:
+
+```bash
+python -m codescope.cli index examples/buggy_calculator
+```
+
+Then run diagnostics:
+
+```bash
+python -m codescope.cli diagnose examples/buggy_calculator
+```
+
+You should see `Tests failed` and a likely relevant chunk for `calculate_discount` in `calculator.py`.
+
 ## Run tests
 
 ```bash

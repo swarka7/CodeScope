@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from codescope.models.test_failure import TestFailure
@@ -35,18 +36,27 @@ class FailureParser:
             display_name = _display_test_name(summary.nodeid)
 
             location = _find_location(lines, file_path=file_path)
+            error_type = location.error_type if location else None
             traceback_text = _extract_traceback(lines, display_name=display_name, location=location)
 
             message = summary.message.strip()
-            if not message:
-                message = _extract_message_from_traceback(traceback_text)
+            extracted_message = _extract_message_from_traceback(
+                traceback_text, error_type=error_type
+            )
+
+            if error_type == "AssertionError":
+                # Summary messages are frequently truncated; prefer the detailed traceback message.
+                if extracted_message:
+                    message = extracted_message
+            elif not message:
+                message = extracted_message
 
             failures.append(
                 TestFailure(
                     test_name=summary.nodeid,
                     file_path=file_path,
                     line_number=location.line_number if location else None,
-                    error_type=location.error_type if location else None,
+                    error_type=error_type,
                     message=message,
                     traceback=traceback_text,
                 )
@@ -207,16 +217,111 @@ def _is_section_separator(line: str) -> bool:
     return True
 
 
-def _extract_message_from_traceback(traceback: str) -> str:
+_WHERE_LINE_RE = re.compile(r"""^\+\s*where\s+(?P<value>.+?)\s*=\s*(?P<expr>.+)$""")
+_ASSERT_EQUALS_RE = re.compile(r"""^assert\s+(?P<left>.+?)\s*==\s*(?P<right>.+)$""")
+
+
+def _extract_message_from_traceback(traceback: str, *, error_type: str | None) -> str:
+    if error_type == "AssertionError":
+        return _extract_assertion_message(traceback)
+    return _extract_first_error_line(traceback)
+
+
+def _extract_first_error_line(traceback: str) -> str:
     for raw in traceback.splitlines():
         line = raw.strip()
+        if not line or _is_failure_header(line) or _is_section_separator(line):
+            continue
         if not line.startswith("E"):
             continue
 
-        # Normalize both `E assert ...` and `E AssertionError: ...` forms.
         message = line.removeprefix("E").strip()
-        if message:
-            return message
+        if not message:
+            continue
+
+        return _truncate_one_line(message)
 
     return ""
 
+
+def _extract_assertion_message(traceback: str) -> str:
+    """Extract a concise assertion message from pytest's failure traceback."""
+    where_map: dict[str, str] = {}
+    candidates: list[str] = []
+    source_assert: str | None = None
+
+    for raw in traceback.splitlines():
+        line = raw.strip()
+        if not line or _is_failure_header(line) or _is_section_separator(line):
+            continue
+
+        if line.startswith(">") and source_assert is None and "assert " in line:
+            # Example: `>       assert eval(test_input) == expected`
+            source_assert = line.split("assert ", 1)[1].strip()
+
+        if not line.startswith("E"):
+            continue
+
+        payload = line.removeprefix("E").strip()
+        if not payload:
+            continue
+
+        where_match = _WHERE_LINE_RE.match(payload)
+        if where_match:
+            where_map[where_match.group("value").strip()] = where_match.group("expr").strip()
+            continue
+
+        # Skip separator-ish or diff marker lines.
+        if payload in {"+", "-", "?", "|"}:
+            continue
+
+        candidates.append(payload)
+
+    best = _pick_best_assertion_candidate(candidates)
+    if not best and source_assert:
+        best = f"assert {source_assert}"
+
+    if not best:
+        return _extract_first_error_line(traceback)
+
+    best = _strip_assertionerror_prefix(best)
+
+    equals_match = _ASSERT_EQUALS_RE.match(best)
+    if equals_match:
+        left = equals_match.group("left").strip()
+        right = equals_match.group("right").strip()
+        expr = where_map.get(left)
+        if expr and "(" in expr:
+            best = f"{expr} returned {left} instead of {right}"
+
+    return _truncate_one_line(best)
+
+
+def _pick_best_assertion_candidate(candidates: list[str]) -> str:
+    # Prefer the standard pytest assertion summary line, in both forms:
+    # - `AssertionError: assert 3 == 4`
+    # - `assert 3 == 4`
+    for candidate in candidates:
+        if candidate.startswith("AssertionError:") and "assert " in candidate:
+            return candidate
+    for candidate in candidates:
+        if candidate.startswith("assert "):
+            return candidate
+    for candidate in candidates:
+        if candidate.startswith("AssertionError:"):
+            return candidate
+    return candidates[0] if candidates else ""
+
+
+def _strip_assertionerror_prefix(message: str) -> str:
+    if not message.startswith("AssertionError:"):
+        return message
+    stripped = message.removeprefix("AssertionError:").strip()
+    return stripped or message
+
+
+def _truncate_one_line(message: str, *, max_chars: int = 220) -> str:
+    single_line = " ".join(message.strip().split())
+    if len(single_line) <= max_chars:
+        return single_line
+    return single_line[: max_chars - 3].rstrip() + "..."

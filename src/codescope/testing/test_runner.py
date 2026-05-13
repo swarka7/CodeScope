@@ -30,9 +30,9 @@ class TestRunner:
             "pytest",
             "--no-header",
             "--rootdir",
-            str(repo_path),
+            ".",
             "--confcutdir",
-            str(repo_path),
+            ".",
         ]
         if test_path is not None:
             cmd.append(str(test_path))
