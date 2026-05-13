@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
+from codescope.indexing.index_store import IndexStore
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
 from codescope.retrieval.dependency_aware import enrich_with_related
@@ -20,6 +22,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     scan_parser = subparsers.add_parser("scan", help="Scan a repository for Python files")
     scan_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+
+    index_parser = subparsers.add_parser("index", help="Build a local CodeScope index")
+    index_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
 
     chunks_parser = subparsers.add_parser(
         "chunks", help="Extract structural code chunks from a repository"
@@ -50,6 +55,48 @@ def _handle_scan(repo_path: Path) -> int:
             display_path = file_path
         print(display_path)
 
+    return 0
+
+
+def _handle_index(repo_path: Path) -> int:
+    scanner = RepoScanner()
+    try:
+        files = scanner.scan(repo_path)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    parser = AstParser()
+    chunker = Chunker()
+
+    chunks = []
+    for file_path in files:
+        parsed = parser.parse_file(file_path)
+        chunks.extend(chunker.extract_chunks(parsed))
+
+    if not chunks:
+        print("No chunks found")
+        return 0
+
+    embedder = Embedder()
+    try:
+        embeddings = embedder.embed_chunks(chunks)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    metadata = {
+        "schema_version": 1,
+        "created_at": datetime.now(UTC).isoformat(),
+        "files_indexed": len(files),
+        "chunks_indexed": len(chunks),
+    }
+
+    store = IndexStore(repo_path)
+    store.save(chunks=chunks, embeddings=embeddings, metadata=metadata)
+
+    print(f"Indexed {len(chunks)} chunks from {len(files)} files")
+    print("Saved index to .codescope/")
     return 0
 
 
@@ -91,35 +138,28 @@ def _handle_chunks(repo_path: Path) -> int:
 
 
 def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
-    scanner = RepoScanner()
+    index_store = IndexStore(repo_path)
+    if not index_store.exists():
+        print(
+            "No CodeScope index found. Run: python -m codescope.cli index <repo_path>",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
-        files = scanner.scan(repo_path)
-    except (FileNotFoundError, NotADirectoryError) as exc:
+        chunks, embeddings, _metadata = index_store.load()
+    except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    parser = AstParser()
-    chunker = Chunker()
-
-    chunks = []
-    for file_path in files:
-        parsed = parser.parse_file(file_path)
-        chunks.extend(chunker.extract_chunks(parsed))
-
-    if not chunks:
-        print("No chunks found")
-        return 0
-
     embedder = Embedder()
-    store = MemoryStore()
-
     try:
-        embeddings = embedder.embed_chunks(chunks)
         query_embedding = embedder.embed_text(query)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
+    store = MemoryStore()
     store.add(chunks, embeddings)
     semantic_results = store.search(query_embedding, top_k=top_k)
     graph = DependencyGraph(chunks)
@@ -153,6 +193,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "scan":
         return _handle_scan(args.repo_path)
+
+    if args.command == "index":
+        return _handle_index(args.repo_path)
 
     if args.command == "chunks":
         return _handle_chunks(args.repo_path)

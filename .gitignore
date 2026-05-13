@@ -38,3 +38,6 @@ Thumbs.db
 
 # Python version managers
 .python-version
+
+# CodeScope local index
+.codescope/
