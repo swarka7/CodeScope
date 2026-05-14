@@ -157,8 +157,3 @@ ruff check .
 - Iterative repair loop
 - Qdrant/FAISS backend
 - VS Code extension
-
-## Contributing
-
-Issues and PRs are welcome.
-Please keep changes focused and aligned with the current milestones, and include tests for behavior changes where practical.
