@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.indexer import Indexer
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
@@ -76,44 +76,18 @@ def _handle_scan(repo_path: Path) -> int:
 
 
 def _handle_index(repo_path: Path) -> int:
-    scanner = RepoScanner()
     try:
-        files = scanner.scan(repo_path)
+        summary = Indexer(repo_path).index()
     except (FileNotFoundError, NotADirectoryError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-
-    parser = AstParser()
-    chunker = Chunker()
-
-    chunks = []
-    for file_path in files:
-        parsed = parser.parse_file(file_path)
-        chunks.extend(chunker.extract_chunks(parsed))
-
-    if not chunks:
-        print("No chunks found")
-        return 0
-
-    embedder = Embedder()
-    try:
-        embeddings = embedder.embed_chunks(chunks)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-
-    metadata = {
-        "schema_version": 1,
-        "created_at": datetime.now(UTC).isoformat(),
-        "files_indexed": len(files),
-        "chunks_indexed": len(chunks),
-    }
-
-    store = IndexStore(repo_path)
-    store.save(chunks=chunks, embeddings=embeddings, metadata=metadata)
-
-    print(f"Indexed {len(chunks)} chunks from {len(files)} files")
-    print("Saved index to .codescope/")
+    print(f"Indexed {summary.indexed_files} new/changed files")
+    print(f"Reused {summary.reused_files} unchanged files")
+    print(f"Removed {summary.removed_files} deleted files")
+    print(f"Total chunks: {summary.total_chunks}")
     return 0
 
 
