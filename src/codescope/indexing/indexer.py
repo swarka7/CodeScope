@@ -68,20 +68,23 @@ class Indexer:
                 changed_paths.add(rel_path)
                 continue
 
-            if _fingerprints_match(old, stat_fp):
-                unchanged_paths.add(rel_path)
+            old_sha256 = old.get("sha256")
+            if isinstance(old_sha256, str) and old_sha256:
+                current_sha256 = _sha256(self._repo_path / rel_path)
+                if current_sha256 == old_sha256:
+                    unchanged_paths.add(rel_path)
+                    updated_file_meta_by_path[rel_path] = {
+                        "path": rel_path,
+                        "mtime_ns": stat_fp["mtime_ns"],
+                        "size": stat_fp["size"],
+                        "sha256": old_sha256,
+                    }
+                else:
+                    changed_paths.add(rel_path)
                 continue
 
-            if old.get("sha256") and _sha256(self._repo_path / rel_path) == old.get("sha256"):
-                unchanged_paths.add(rel_path)
-                updated_file_meta_by_path[rel_path] = {
-                    "path": rel_path,
-                    "mtime_ns": stat_fp["mtime_ns"],
-                    "size": stat_fp["size"],
-                    "sha256": old.get("sha256"),
-                }
-                continue
-
+            # Backward-compatibility: older indexes may not include sha256 per file.
+            # Reindex these files once to populate the content hash and ensure correctness.
             changed_paths.add(rel_path)
 
         for rel_path in deleted_paths:

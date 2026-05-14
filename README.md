@@ -53,6 +53,10 @@ Semantic + Dependency Retrieval
 Failure-Aware Diagnosis
 ```
 
+## Current limitations
+
+- Symbol resolution is heuristic/static (basic imports + aliases + same-file hints) and does not perform full Python type inference or dynamic import execution.
+
 ## Installation
 
 Create a virtual environment and install CodeScope in editable mode:

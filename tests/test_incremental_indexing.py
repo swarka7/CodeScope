@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from codescope.embeddings.embedder import Embedder
@@ -78,7 +79,10 @@ def test_changed_file_gets_reindexed(tmp_path: Path) -> None:
     indexer = Indexer(repo_path, embedder=embedder)
 
     first = indexer.index()
+    before = file_path.stat()
     file_path.write_text("def foo() -> int:\n    return 2\n", encoding="utf-8")
+    # Some Windows filesystems have coarse mtime resolution; keep the fingerprint stable.
+    os.utime(file_path, ns=(before.st_atime_ns, before.st_mtime_ns))
     second = indexer.index()
 
     assert first.total_chunks == 1
