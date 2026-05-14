@@ -213,6 +213,73 @@ def test_failure_aware_retrieval_returns_relevant_chunks(tmp_path: Path) -> None
     assert [r.chunk.name for r in results] == ["validate_token", "JWTManager"]
 
 
+def test_failure_aware_ranking_prefers_source_when_symbol_only_in_traceback(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    test_chunk = _chunk(
+        id="test",
+        file_path=(repo_path / "tests" / "test_auth_service.py").as_posix(),
+        chunk_type="function",
+        name="test_expired_token_is_rejected",
+        dependencies=[],
+        start_line=1,
+        end_line=6,
+        source_code="\n".join(
+            [
+                "from auth_service import validate_token",
+                "",
+                "def test_expired_token_is_rejected() -> None:",
+                "    result = validate_token('expired')",
+                "    assert result is False",
+                "",
+            ]
+        ),
+    )
+    source_chunk = _chunk(
+        id="src",
+        file_path=(repo_path / "auth_service.py").as_posix(),
+        chunk_type="function",
+        name="validate_token",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code="def validate_token(token: str) -> bool:\n    return True\n",
+    )
+
+    IndexStore(repo_path).save(
+        chunks=[test_chunk, source_chunk],
+        embeddings=[
+            [1.0, 0.0],  # semantic match favors tests first
+            [0.7, 0.7],
+        ],
+        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+    )
+
+    failure = TestFailure(
+        test_name="tests/test_auth_service.py::test_expired_token_is_rejected",
+        file_path="tests/test_auth_service.py",
+        line_number=5,
+        error_type="AssertionError",
+        message="assert True is False",
+        traceback="\n".join(
+            [
+                "def test_expired_token_is_rejected() -> None:",
+                "    result = validate_token('expired')",
+                ">   assert result is False",
+                "E   assert True is False",
+            ]
+        ),
+    )
+
+    retriever = FailureRetriever(repo_path, embedder=Embedder(model=_FixedQueryModel([1.0, 0.0])))
+    results = retriever.retrieve(failure, top_k=2)
+
+    assert [r.kind for r in results] == ["semantic", "semantic"]
+    assert [r.chunk.name for r in results] == ["validate_token", "test_expired_token_is_rejected"]
+    assert len({r.chunk.id for r in results}) == len(results)
+
+
 def test_diagnose_outputs_failure_summary_and_likely_relevant_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

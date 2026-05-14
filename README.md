@@ -107,7 +107,9 @@ Diagnose failing tests and retrieve likely relevant code (requires an existing i
 python -m codescope.cli diagnose .
 ```
 
-## Demo: buggy calculator
+## Demos
+
+### Buggy calculator (minimal)
 
 This repo includes a tiny intentionally broken project at `examples/buggy_calculator/`.
 
@@ -126,6 +128,17 @@ Message: calculate_discount(100, 10) returned -900 instead of 90
 Likely relevant code:
 [semantic] [function] calculate_discount calculator.py:4-16
 ```
+
+### Buggy auth service (more realistic)
+
+For a more backend-style demo, see `examples/buggy_auth_service/` (token parsing + validation).
+
+```bash
+python -m codescope.cli index examples/buggy_auth_service
+python -m codescope.cli diagnose examples/buggy_auth_service
+```
+
+The failing test calls `validate_token(...)` for an expired token and expects `False`, so diagnosis should ideally surface `validate_token` and related token parsing context (e.g. `decode_token`, `TokenPayload`).
 
 ## Testing
 
