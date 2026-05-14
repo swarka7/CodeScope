@@ -6,9 +6,10 @@ from pathlib import Path
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_store import IndexStore
+from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
-from codescope.vectorstore.memory_store import MemoryStore
+from codescope.vectorstore.memory_store import MemoryStore, SearchResult
 
 
 class FailureRetriever:
@@ -26,6 +27,14 @@ class FailureRetriever:
     _PYTEST_LOCATION_RE = re.compile(r"""(?P<path>\S+?\.py):(?P<line>\d+):""")
     _IN_FUNCTION_RE = re.compile(r"""\bin\s+(?P<func>[A-Za-z_]\w*)\b""")
     _CALL_SYMBOL_RE = re.compile(r"""\b(?P<name>[A-Za-z_]\w*)\s*\(""")
+    _HINT_PATH_RE = re.compile(r"""^(?P<path>.+?\.py)(?::(?P<line>\d+))?$""")
+
+    _TEST_CHUNK_PENALTY = 0.35
+    _NON_TEST_CHUNK_BOOST = 0.10
+    _MESSAGE_SYMBOL_BOOST = 0.60
+    _TRACEBACK_SYMBOL_BOOST = 0.35
+    _SAME_FILE_HINT_BOOST = 0.25
+    _SAME_DIR_HINT_BOOST = 0.15
 
     def __init__(
         self,
@@ -227,6 +236,129 @@ class FailureRetriever:
 
         return (symbols, source_hints)
 
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        normalized = path.replace("\\", "/").strip()
+        while normalized.startswith("./"):
+            normalized = normalized.removeprefix("./")
+        return normalized.strip("/").lower()
+
+    @staticmethod
+    def _is_test_chunk(chunk: CodeChunk) -> bool:
+        path = FailureRetriever._normalize_path(chunk.file_path)
+        path_wrapped = f"/{path}/"
+        if "/tests/" in path_wrapped:
+            return True
+
+        file_name = path.rsplit("/", 1)[-1]
+        if file_name in {"conftest.py"}:
+            return True
+        if file_name.startswith("test_"):
+            return True
+        if file_name.endswith("_test.py"):
+            return True
+
+        return False
+
+    @staticmethod
+    def _hint_to_normalized_path(hint: str) -> str:
+        match = FailureRetriever._HINT_PATH_RE.match(hint.strip())
+        if match is None:
+            return ""
+        return FailureRetriever._normalize_path(match.group("path"))
+
+    @staticmethod
+    def _extract_message_symbols(message: str) -> set[str]:
+        symbols: set[str] = set()
+        for match in FailureRetriever._CALL_SYMBOL_RE.finditer(message):
+            symbols.add(match.group("name"))
+        return symbols
+
+    @staticmethod
+    def _is_test_path(path: str) -> bool:
+        normalized = FailureRetriever._normalize_path(path)
+        wrapped = f"/{normalized}/"
+        if "/tests/" in wrapped:
+            return True
+
+        file_name = normalized.rsplit("/", 1)[-1]
+        if file_name in {"conftest.py"}:
+            return True
+        if file_name.startswith("test_"):
+            return True
+        if file_name.endswith("_test.py"):
+            return True
+
+        return False
+
+    @staticmethod
+    def score_failure_chunk(*, chunk: CodeChunk, base_score: float, failure: TestFailure) -> float:
+        """Heuristic reranking score used during failure-aware retrieval.
+
+        This is intentionally simple: it adjusts the semantic similarity score with
+        lightweight signals (test vs source, symbol matches, path hints) to prefer
+        likely implementation code over test code.
+        """
+        score = float(base_score)
+
+        message_symbols = FailureRetriever._extract_message_symbols(failure.message)
+        traceback_symbols, source_hints = FailureRetriever._extract_traceback_hints(
+            failure.traceback,
+            max_symbols=FailureRetriever._MAX_TRACEBACK_SYMBOLS,
+            max_source_hints=FailureRetriever._MAX_SOURCE_HINTS,
+        )
+        traceback_symbol_set = {symbol for symbol in traceback_symbols}
+
+        if FailureRetriever._is_test_chunk(chunk):
+            score -= FailureRetriever._TEST_CHUNK_PENALTY
+        else:
+            score += FailureRetriever._NON_TEST_CHUNK_BOOST
+
+        if chunk.name in message_symbols:
+            score += FailureRetriever._MESSAGE_SYMBOL_BOOST
+
+        if chunk.name in traceback_symbol_set:
+            score += FailureRetriever._TRACEBACK_SYMBOL_BOOST
+
+        normalized_chunk_path = FailureRetriever._normalize_path(chunk.file_path)
+        hint_files = [FailureRetriever._hint_to_normalized_path(hint) for hint in source_hints]
+        hint_files = [hint for hint in hint_files if hint]
+
+        non_test_hint_files = [
+            hint for hint in hint_files if not FailureRetriever._is_test_path(hint)
+        ]
+        hint_dirs = {hint.rsplit("/", 1)[0] for hint in non_test_hint_files if "/" in hint}
+
+        for hint_file in non_test_hint_files:
+            if normalized_chunk_path == hint_file or normalized_chunk_path.endswith(
+                "/" + hint_file
+            ):
+                score += FailureRetriever._SAME_FILE_HINT_BOOST
+                break
+
+        for hint_dir in hint_dirs:
+            if normalized_chunk_path.startswith(hint_dir + "/") or normalized_chunk_path.endswith(
+                "/" + hint_dir
+            ):
+                score += FailureRetriever._SAME_DIR_HINT_BOOST
+                break
+
+        return score
+
+    @staticmethod
+    def rerank_semantic_results_for_failure(
+        *, failure: TestFailure, semantic_results: list[SearchResult]
+    ) -> list[SearchResult]:
+        scored: list[tuple[float, str, SearchResult]] = []
+        for result in semantic_results:
+            adjusted = FailureRetriever.score_failure_chunk(
+                chunk=result.chunk, base_score=result.score, failure=failure
+            )
+            scored.append((adjusted, result.chunk.id, result))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [SearchResult(chunk=item[2].chunk, score=item[0]) for item in scored]
+
     def retrieve(self, failure: TestFailure, *, top_k: int = 5) -> list[RetrievalResult]:
         chunks, embeddings, _metadata = self._index_store.load()
 
@@ -235,7 +367,12 @@ class FailureRetriever:
 
         store = MemoryStore()
         store.add(chunks, embeddings)
-        semantic = store.search(query_embedding, top_k=top_k)
+        candidate_k = max(top_k, top_k * 4)
+        semantic_candidates = store.search(query_embedding, top_k=candidate_k)
+        semantic_ranked = self.rerank_semantic_results_for_failure(
+            failure=failure, semantic_results=semantic_candidates
+        )
+        semantic = semantic_ranked[:top_k]
 
         graph = DependencyGraph(chunks)
         return enrich_with_related(query=query, semantic_results=semantic, graph=graph)

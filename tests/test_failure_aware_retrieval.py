@@ -291,6 +291,142 @@ def test_diagnose_outputs_failure_summary_and_likely_relevant_code(
     assert "validate_token" in captured.out
 
 
+def test_failure_aware_ranking_prefers_source_over_test_chunk(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    source_file = repo_path / "calculator.py"
+    test_file = repo_path / "tests" / "test_calculator.py"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+
+    source_file.write_text(
+        "\n".join(
+            [
+                "def calculate_discount(price: int, percent: int) -> int:",
+                "    return price - (price * percent)",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    test_file.write_text(
+        "\n".join(
+            [
+                "from calculator import calculate_discount",
+                "",
+                "def test_calculate_discount_applies_percent() -> None:",
+                "    assert calculate_discount(100, 10) == 90",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    source_chunk = _chunk(
+        id="calc",
+        file_path=source_file.as_posix(),
+        chunk_type="function",
+        name="calculate_discount",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code=source_file.read_text(encoding="utf-8"),
+    )
+    test_chunk = _chunk(
+        id="test",
+        file_path=test_file.as_posix(),
+        chunk_type="function",
+        name="test_calculate_discount_applies_percent",
+        dependencies=["calculate_discount"],
+        start_line=1,
+        end_line=4,
+        source_code=test_file.read_text(encoding="utf-8"),
+    )
+
+    # Make the test chunk win on raw cosine similarity (before reranking).
+    embeddings = [
+        [1.0, 0.0],  # test chunk: similarity 1.0 vs query [1, 0]
+        [0.8, 0.6],  # source chunk: similarity 0.8 vs query [1, 0]
+    ]
+
+    IndexStore(repo_path).save(
+        chunks=[test_chunk, source_chunk],
+        embeddings=embeddings,
+        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+    )
+
+    failure = TestFailure(
+        test_name="tests/test_calculator.py::test_calculate_discount_applies_percent",
+        file_path="tests/test_calculator.py",
+        line_number=4,
+        error_type="AssertionError",
+        message="calculate_discount(100, 10) returned -900 instead of 90",
+        traceback=">   assert calculate_discount(100, 10) == 90",
+    )
+
+    retriever = FailureRetriever(repo_path, embedder=Embedder(model=_FixedQueryModel([1.0, 0.0])))
+    results = retriever.retrieve(failure, top_k=2)
+
+    assert [r.kind for r in results] == ["semantic", "semantic"]
+    assert [r.chunk.name for r in results] == [
+        "calculate_discount",
+        "test_calculate_discount_applies_percent",
+    ]
+    assert len({r.chunk.id for r in results}) == len(results)
+
+
+def test_failure_aware_ranking_keeps_tests_when_strongly_relevant(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    test_chunk = _chunk(
+        id="test",
+        file_path=(repo_path / "tests" / "test_app.py").as_posix(),
+        chunk_type="function",
+        name="test_app",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code="def test_app() -> None:\n    assert False\n",
+    )
+    source_chunk = _chunk(
+        id="src",
+        file_path=(repo_path / "app.py").as_posix(),
+        chunk_type="function",
+        name="run",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code="def run() -> None:\n    pass\n",
+    )
+
+    embeddings = [
+        [1.0, 0.0],  # test chunk remains the strongest semantic match
+        [0.0, 1.0],
+    ]
+    IndexStore(repo_path).save(
+        chunks=[test_chunk, source_chunk],
+        embeddings=embeddings,
+        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+    )
+
+    failure = TestFailure(
+        test_name="tests/test_app.py::test_app",
+        file_path="tests/test_app.py",
+        line_number=1,
+        error_type="AssertionError",
+        message="assert False",
+        traceback=">   assert False",
+    )
+
+    retriever = FailureRetriever(repo_path, embedder=Embedder(model=_FixedQueryModel([1.0, 0.0])))
+    first = retriever.retrieve(failure, top_k=2)
+    second = retriever.retrieve(failure, top_k=2)
+
+    assert [r.chunk.id for r in first] == [r.chunk.id for r in second]
+    assert [r.chunk.id for r in first] == ["test", "src"]
+
+
 class _KeywordModel:
     def encode_query(self, text: str, *, normalize_embeddings: bool) -> list[float]:
         _ = normalize_embeddings
@@ -300,6 +436,15 @@ class _KeywordModel:
         if "jwtmanager" in lower or "jwt" in lower:
             return [0.0, 1.0, 0.0]
         return [0.0, 0.0, 1.0]
+
+
+class _FixedQueryModel:
+    def __init__(self, embedding: list[float]) -> None:
+        self._embedding = embedding
+
+    def encode_query(self, text: str, *, normalize_embeddings: bool) -> list[float]:
+        _ = (text, normalize_embeddings)
+        return list(self._embedding)
 
 
 def _chunk(
