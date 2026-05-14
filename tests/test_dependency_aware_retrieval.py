@@ -302,6 +302,265 @@ def test_semantic_results_remain_first() -> None:
     assert [r.kind for r in enriched[:2]] == ["semantic", "semantic"]
 
 
+def test_multi_hop_traversal_adds_indirect_dependencies() -> None:
+    leaf = _chunk(name="leaf", chunk_type="function", dependencies=[], file_path="module.py")
+    middle = _chunk(
+        name="middle",
+        chunk_type="function",
+        dependencies=["leaf"],
+        file_path="module.py",
+    )
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["middle"],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([root, middle, leaf])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=5,
+    )
+
+    assert [r.kind for r in enriched] == ["semantic", "related", "related"]
+    assert [r.chunk.id for r in enriched] == [root.id, middle.id, leaf.id]
+
+
+def test_depth_limit_prevents_indirect_dependencies() -> None:
+    leaf = _chunk(name="leaf", chunk_type="function", dependencies=[], file_path="module.py")
+    middle = _chunk(
+        name="middle",
+        chunk_type="function",
+        dependencies=["leaf"],
+        file_path="module.py",
+    )
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["middle"],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([root, middle, leaf])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=1,
+        max_related=5,
+    )
+
+    assert [r.chunk.id for r in enriched] == [root.id, middle.id]
+
+
+def test_multi_hop_duplicate_chunks_are_avoided() -> None:
+    shared = _chunk(name="shared", chunk_type="function", dependencies=[], file_path="module.py")
+    left = _chunk(
+        name="left",
+        chunk_type="function",
+        dependencies=["shared"],
+        file_path="module.py",
+    )
+    right = _chunk(
+        name="right",
+        chunk_type="function",
+        dependencies=["shared"],
+        file_path="module.py",
+    )
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["left", "right"],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([root, left, right, shared])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+
+    ids = [r.chunk.id for r in enriched]
+    assert len(ids) == len(set(ids))
+    assert shared.id in ids
+
+
+def test_multi_hop_same_module_indirect_chunks_rank_higher() -> None:
+    indirect_same = _chunk(
+        name="indirect_same",
+        chunk_type="function",
+        dependencies=[],
+        file_path="pkg/models.py",
+    )
+    indirect_other = _chunk(
+        name="indirect_other",
+        chunk_type="function",
+        dependencies=[],
+        file_path="other/models.py",
+    )
+    dep_same_file = _chunk(
+        name="dep_same_file",
+        chunk_type="function",
+        dependencies=["indirect_same"],
+        file_path="pkg/service.py",
+    )
+    dep_other_module = _chunk(
+        name="dep_other_module",
+        chunk_type="function",
+        dependencies=["indirect_other"],
+        file_path="other/dep.py",
+    )
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["dep_same_file", "dep_other_module"],
+        file_path="pkg/service.py",
+    )
+
+    graph = DependencyGraph([root, dep_same_file, dep_other_module, indirect_same, indirect_other])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+
+    indirect_ids = [r.chunk.id for r in enriched if r.chunk.name.startswith("indirect_")]
+    assert indirect_ids == [indirect_same.id, indirect_other.id]
+
+
+def test_multi_hop_same_file_indirect_chunks_are_preferred() -> None:
+    indirect_same_file = _chunk(
+        name="indirect_same_file",
+        chunk_type="function",
+        dependencies=[],
+        file_path="module.py",
+    )
+    indirect_remote = _chunk(
+        name="indirect_remote",
+        chunk_type="function",
+        dependencies=[],
+        file_path="other.py",
+    )
+    dep_remote = _chunk(
+        name="dep_remote",
+        chunk_type="function",
+        dependencies=["indirect_same_file"],
+        file_path="other.py",
+    )
+    dep_local = _chunk(
+        name="dep_local",
+        chunk_type="function",
+        dependencies=["indirect_remote"],
+        file_path="module.py",
+    )
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["dep_remote", "dep_local"],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([root, dep_remote, dep_local, indirect_same_file, indirect_remote])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+
+    indirect_ids = [r.chunk.id for r in enriched if r.chunk.name.startswith("indirect_")]
+    assert indirect_ids == [indirect_same_file.id, indirect_remote.id]
+
+
+def test_multi_hop_test_noise_suppression_still_works() -> None:
+    helper = _chunk(
+        name="helper",
+        chunk_type="function",
+        dependencies=["test_util"],
+        file_path="app.py",
+    )
+    root = _chunk(name="root", chunk_type="function", dependencies=["helper"], file_path="app.py")
+    test_util = _chunk(
+        name="test_util",
+        chunk_type="function",
+        dependencies=[],
+        file_path="tests/test_util.py",
+    )
+
+    graph = DependencyGraph([root, helper, test_util])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    enriched = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+    assert test_util.id not in [r.chunk.id for r in enriched]
+
+    enriched = enrich_with_related(
+        query="pytest root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+    assert test_util.id in [r.chunk.id for r in enriched]
+
+
+def test_multi_hop_deterministic_ordering() -> None:
+    shared = _chunk(name="shared", chunk_type="function", dependencies=[], file_path="module.py")
+    a = _chunk(name="a", chunk_type="function", dependencies=["shared"], file_path="module.py")
+    b = _chunk(name="b", chunk_type="function", dependencies=["shared"], file_path="module.py")
+    root = _chunk(
+        name="root",
+        chunk_type="function",
+        dependencies=["a", "b"],
+        file_path="module.py",
+    )
+
+    graph = DependencyGraph([root, a, b, shared])
+    semantic_results = [SearchResult(chunk=root, score=0.9)]
+
+    first = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+    second = enrich_with_related(
+        query="root",
+        semantic_results=semantic_results,
+        graph=graph,
+        max_depth=2,
+        max_related=10,
+    )
+
+    assert [r.chunk.id for r in first] == [r.chunk.id for r in second]
+
+
 def _chunk(
     *,
     name: str,
