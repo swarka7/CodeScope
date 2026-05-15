@@ -9,8 +9,8 @@ from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
+from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
-from codescope.indexing.index_versions import is_current_index_metadata
 from codescope.indexing.indexer import Indexer
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
@@ -134,30 +134,21 @@ def _handle_chunks(repo_path: Path) -> int:
 
 def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
     index_store = IndexStore(repo_path)
-    if not index_store.exists():
-        print(
-            "No CodeScope index found. Run: python -m codescope.cli index <repo_path>",
-            file=sys.stderr,
-        )
-        return 2
+    embedder = Embedder()
 
     try:
-        metadata = index_store.load_metadata()
-        if not is_current_index_metadata(
-            metadata=metadata,
-            embedding_model_name=Embedder().model_name,
-        ):
-            print(
-                "Index is outdated. Run: python -m codescope.cli index <repo_path>",
-                file=sys.stderr,
-            )
+        compatibility = check_index_compatibility(
+            index_store=index_store,
+            embedding_model_name=embedder.model_name,
+        )
+        if not compatibility.compatible:
+            print(compatibility.message, file=sys.stderr)
             return 2
         chunks, embeddings, _metadata = index_store.load()
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    embedder = Embedder()
     try:
         query_embedding = embedder.embed_text(query)
     except RuntimeError as exc:
@@ -241,11 +232,17 @@ def _handle_diagnose(repo_path: Path) -> int:
         return run_result.exit_code
 
     index_store = IndexStore(repo_path)
-    if not index_store.exists():
-        print(
-            "No CodeScope index found. Run: python -m codescope.cli index <repo_path>",
-            file=sys.stderr,
+    try:
+        compatibility = check_index_compatibility(
+            index_store=index_store,
+            embedding_model_name=Embedder().model_name,
         )
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    if compatibility.reason == "missing":
+        print(compatibility.message, file=sys.stderr)
         return 2
 
     retriever = FailureRetriever(repo_path)
@@ -257,6 +254,10 @@ def _handle_diagnose(repo_path: Path) -> int:
         if failure.message:
             print(f"Message: {failure.message}")
         print()
+
+        if not compatibility.compatible:
+            print(compatibility.message, file=sys.stderr)
+            return 2
 
         try:
             results = retriever.retrieve(failure, top_k=5)

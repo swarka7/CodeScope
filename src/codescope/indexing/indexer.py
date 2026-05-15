@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from codescope.embeddings.embedder import Embedder
+from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.index_versions import (
     EMBEDDING_TEXT_VERSION,
     INDEX_SCHEMA_VERSION,
-    is_current_index_metadata,
 )
 from codescope.models.code_chunk import CodeChunk
 from codescope.parser.ast_parser import AstParser
@@ -60,15 +60,15 @@ class Indexer:
         rebuilt_full_index = False
 
         if self._store.exists():
-            previous_metadata = self._store.load_metadata()
-            if is_current_index_metadata(
-                metadata=previous_metadata,
+            compatibility = check_index_compatibility(
+                index_store=self._store,
                 embedding_model_name=self._embedder.model_name,
-            ):
+            )
+            if compatibility.compatible:
                 previous_chunks, previous_embeddings, previous_metadata = self._store.load()
                 previous_file_meta = _metadata_files_by_path(previous_metadata)
             else:
-                rebuilt_full_index = True
+                rebuilt_full_index = compatibility.requires_rebuild
                 previous_metadata = {}
 
         deleted_paths = set(previous_file_meta) - set(file_stats_by_path)
