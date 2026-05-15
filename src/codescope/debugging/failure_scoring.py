@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from codescope.debugging.failure_signals import (
     VALIDATION_WORDS,
@@ -62,6 +63,30 @@ _DID_NOT_RAISE_GENERIC_RAISE_BOOST = 0.10
 _DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST = 0.20
 _DID_NOT_RAISE_GENERIC_SIGNAL_CAP = 0.15
 _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE = 0.35
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreComponent:
+    name: str
+    value: float
+    details: tuple[str, ...] = ()
+    contributes_to_score: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreBreakdown:
+    components: tuple[ScoreComponent, ...]
+
+    @property
+    def final_score(self) -> float:
+        return sum(
+            component.value
+            for component in self.components
+            if component.contributes_to_score
+        )
+
+    def by_name(self, name: str) -> tuple[ScoreComponent, ...]:
+        return tuple(component for component in self.components if component.name == name)
 
 
 def extract_traceback_hints(
@@ -174,23 +199,57 @@ def score_failure_chunk(
     signals: FailureSignals | None = None,
 ) -> float:
     """Heuristic reranking score used during failure-aware retrieval."""
-    score = float(base_score)
+    return build_score_breakdown(
+        chunk=chunk,
+        base_score=base_score,
+        failure=failure,
+        signals=signals,
+    ).final_score
+
+
+def build_score_breakdown(
+    *,
+    chunk: CodeChunk,
+    base_score: float,
+    failure: TestFailure,
+    signals: FailureSignals | None = None,
+    extra_reasons: tuple[str, ...] = (),
+) -> ScoreBreakdown:
     failure_signals = signals or extract_failure_signals(failure)
+    components: list[ScoreComponent] = [
+        ScoreComponent(name="semantic_base_score", value=float(base_score)),
+    ]
 
     message_symbols = extract_message_symbols(failure.message)
     traceback_symbols, source_hints = extract_traceback_hints(failure.traceback)
     traceback_symbol_set = {symbol for symbol in traceback_symbols}
 
     if is_test_path(chunk.file_path):
-        score -= _TEST_CHUNK_PENALTY
+        components.append(
+            ScoreComponent(name="test_chunk_penalty", value=-_TEST_CHUNK_PENALTY)
+        )
     else:
-        score += _NON_TEST_CHUNK_BOOST
+        components.append(
+            ScoreComponent(name="source_chunk_boost", value=_NON_TEST_CHUNK_BOOST)
+        )
 
     if chunk.name in message_symbols:
-        score += _MESSAGE_SYMBOL_BOOST
+        components.append(
+            ScoreComponent(
+                name="message_symbol_match",
+                value=_MESSAGE_SYMBOL_BOOST,
+                details=(chunk.name,),
+            )
+        )
 
     if chunk.name in traceback_symbol_set:
-        score += _TRACEBACK_SYMBOL_BOOST
+        components.append(
+            ScoreComponent(
+                name="traceback_symbol_match",
+                value=_TRACEBACK_SYMBOL_BOOST,
+                details=(chunk.name,),
+            )
+        )
 
     normalized_chunk_path = normalize_path(chunk.file_path)
     hint_files = [hint_to_normalized_path(hint) for hint in source_hints]
@@ -203,22 +262,77 @@ def score_failure_chunk(
         if normalized_chunk_path == hint_file or normalized_chunk_path.endswith(
             "/" + hint_file
         ):
-            score += _SAME_FILE_HINT_BOOST
+            components.append(
+                ScoreComponent(
+                    name="same_file_source_hint",
+                    value=_SAME_FILE_HINT_BOOST,
+                    details=(hint_file,),
+                )
+            )
             break
 
     for hint_dir in hint_dirs:
         if normalized_chunk_path.startswith(hint_dir + "/") or normalized_chunk_path.endswith(
             "/" + hint_dir
         ):
-            score += _SAME_DIR_HINT_BOOST
+            components.append(
+                ScoreComponent(
+                    name="same_directory_source_hint",
+                    value=_SAME_DIR_HINT_BOOST,
+                    details=(hint_dir,),
+                )
+            )
             break
 
-    signal_score = _score_structured_failure_signals(chunk=chunk, signals=failure_signals)
+    signal_components = list(
+        _structured_failure_signal_components(chunk=chunk, signals=failure_signals)
+    )
     if is_test_path(chunk.file_path):
-        signal_score *= 0.25
-    score += signal_score
+        signal_components = _scale_scoring_components(signal_components, 0.25)
+    components.extend(signal_components)
 
-    return score
+    if _is_generic_crud_or_data_access_chunk(chunk):
+        components.append(
+            ScoreComponent(
+                name="generic_crud_or_data_access_penalty",
+                value=0.0,
+                details=("observed_non_scoring_signal",),
+                contributes_to_score=False,
+            )
+        )
+
+    if _has_source_first_selection_signal(
+        failure=failure,
+        chunk=chunk,
+        signals=failure_signals,
+        message_symbols=message_symbols,
+        traceback_symbols=traceback_symbol_set,
+        extra_reasons=extra_reasons,
+    ):
+        components.append(
+            ScoreComponent(
+                name="source_first_selection_signal",
+                value=0.0,
+                details=("observed_non_scoring_signal",),
+                contributes_to_score=False,
+            )
+        )
+
+    if extra_reasons:
+        call_path_reasons = tuple(
+            reason for reason in extra_reasons if "call path" in reason or "called by" in reason
+        )
+        if call_path_reasons:
+            components.append(
+                ScoreComponent(
+                    name="call_path_boost",
+                    value=0.0,
+                    details=call_path_reasons,
+                    contributes_to_score=False,
+                )
+            )
+
+    return ScoreBreakdown(components=tuple(components))
 
 
 def rerank_semantic_results_for_failure(
@@ -306,11 +420,21 @@ def failure_result_sort_key(
 
 
 def _score_structured_failure_signals(*, chunk: CodeChunk, signals: FailureSignals) -> float:
+    return sum(
+        component.value
+        for component in _structured_failure_signal_components(chunk=chunk, signals=signals)
+        if component.contributes_to_score
+    )
+
+
+def _structured_failure_signal_components(
+    *, chunk: CodeChunk, signals: FailureSignals
+) -> tuple[ScoreComponent, ...]:
     text = chunk_signal_text(chunk)
     text_lower = text.lower()
     source_lower = chunk.source_code.lower()
     tokens = chunk_signal_tokens(chunk)
-    score = 0.0
+    components: list[ScoreComponent] = []
 
     defines_exception = defines_expected_exception(chunk, signals)
     expected_exception_in_text = contains_expected_exception(text_lower, signals)
@@ -323,63 +447,164 @@ def _score_structured_failure_signals(*, chunk: CodeChunk, signals: FailureSigna
     relevant_exception_matches = relevant_exception_symbol_matches(tokens, signals)
 
     if expected_exception_in_text:
-        score += _EXPECTED_EXCEPTION_BOOST
+        components.append(
+            ScoreComponent(
+                name="contains_expected_exception",
+                value=_EXPECTED_EXCEPTION_BOOST,
+                details=tuple(sorted(signals.expected_exceptions)),
+            )
+        )
 
     if defines_exception:
-        score += _EXPECTED_EXCEPTION_DEFINITION_BOOST
+        components.append(
+            ScoreComponent(
+                name="expected_exception_definition",
+                value=_EXPECTED_EXCEPTION_DEFINITION_BOOST,
+                details=(chunk.name,),
+            )
+        )
 
     exception_matches = set(signals.exception_symbols) & tokens
-    weak_signal_score = min(
+    weak_components: list[ScoreComponent] = []
+    exception_symbol_score = min(
         _MAX_EXCEPTION_SYMBOL_BOOST,
         len(exception_matches) * _EXCEPTION_SYMBOL_BOOST,
     )
+    if exception_symbol_score:
+        weak_components.append(
+            ScoreComponent(
+                name="exception_symbol_overlap",
+                value=exception_symbol_score,
+                details=tuple(sorted(exception_matches)),
+            )
+        )
 
     behavioral_matches = set(signals.behavioral_words) & tokens
-    weak_signal_score += min(
+    behavioral_score = min(
         _MAX_BEHAVIORAL_WORD_BOOST,
         len(behavioral_matches) * _BEHAVIORAL_WORD_BOOST,
     )
+    if behavioral_score:
+        weak_components.append(
+            ScoreComponent(
+                name="behavioral_keyword_overlap",
+                value=behavioral_score,
+                details=tuple(sorted(behavioral_matches)),
+            )
+        )
 
     operation_matches = set(signals.operation_words) & tokens
-    weak_signal_score += min(
+    operation_score = min(
         _MAX_OPERATION_WORD_BOOST,
         len(operation_matches) * _OPERATION_WORD_BOOST,
     )
+    if operation_score:
+        weak_components.append(
+            ScoreComponent(
+                name="operation_keyword_overlap",
+                value=operation_score,
+                details=tuple(sorted(operation_matches)),
+            )
+        )
 
     domain_matches = set(signals.domain_words) & tokens
-    weak_signal_score += min(
+    domain_score = min(
         _MAX_DOMAIN_WORD_BOOST,
         len(domain_matches) * _DOMAIN_WORD_BOOST,
     )
+    if domain_score:
+        weak_components.append(
+            ScoreComponent(
+                name="domain_keyword_overlap",
+                value=domain_score,
+                details=tuple(sorted(domain_matches)),
+            )
+        )
 
     if not signals.did_not_raise:
-        score += weak_signal_score
-        return score
+        components.extend(weak_components)
+        return tuple(components)
 
     if raises_exception:
-        score += _RAISE_EXPECTED_EXCEPTION_BOOST
+        components.append(
+            ScoreComponent(
+                name="raises_expected_exception",
+                value=_RAISE_EXPECTED_EXCEPTION_BOOST,
+                details=tuple(sorted(signals.expected_exceptions)),
+            )
+        )
     elif contains_raise_statement(source_lower) and relevant_exception_matches:
-        score += _DID_NOT_RAISE_RAISE_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_raise_logic",
+                value=_DID_NOT_RAISE_RAISE_BOOST,
+                details=tuple(sorted(relevant_exception_matches)),
+            )
+        )
     elif contains_raise_statement(source_lower):
-        score += _DID_NOT_RAISE_GENERIC_RAISE_BOOST
+        components.append(
+            ScoreComponent(
+                name="generic_raise_statement",
+                value=_DID_NOT_RAISE_GENERIC_RAISE_BOOST,
+            )
+        )
 
     if expected_exception_in_source and has_validation_text:
-        score += _EXPECTED_EXCEPTION_VALIDATION_TEXT_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_raise_logic",
+                value=_EXPECTED_EXCEPTION_VALIDATION_TEXT_BOOST,
+                details=tuple(sorted(signals.expected_exceptions)),
+            )
+        )
 
     if has_guard_name and (expected_exception_in_source or relevant_exception_matches):
-        score += _DID_NOT_RAISE_GUARD_NAME_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_helper_name",
+                value=_DID_NOT_RAISE_GUARD_NAME_BOOST,
+                details=(chunk.name,),
+            )
+        )
     elif has_guard_name:
-        score += _DID_NOT_RAISE_GENERIC_GUARD_NAME_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_helper_name",
+                value=_DID_NOT_RAISE_GENERIC_GUARD_NAME_BOOST,
+                details=(chunk.name,),
+            )
+        )
 
     if calls_relevant_guard:
-        score += _DID_NOT_RAISE_VALIDATION_CALL_BOOST
+        components.append(
+            ScoreComponent(
+                name="calls_validation_helper",
+                value=_DID_NOT_RAISE_VALIDATION_CALL_BOOST,
+            )
+        )
     elif calls_guard:
-        score += _DID_NOT_RAISE_GENERIC_VALIDATION_CALL_BOOST
+        components.append(
+            ScoreComponent(
+                name="calls_validation_helper",
+                value=_DID_NOT_RAISE_GENERIC_VALIDATION_CALL_BOOST,
+            )
+        )
 
     if has_validation_text and (expected_exception_in_source or relevant_exception_matches):
-        score += _DID_NOT_RAISE_VALIDATION_TEXT_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_raise_logic",
+                value=_DID_NOT_RAISE_VALIDATION_TEXT_BOOST,
+                details=tuple(sorted(relevant_exception_matches)),
+            )
+        )
     elif has_validation_text:
-        score += _DID_NOT_RAISE_GENERIC_VALIDATION_TEXT_BOOST
+        components.append(
+            ScoreComponent(
+                name="validation_text",
+                value=_DID_NOT_RAISE_GENERIC_VALIDATION_TEXT_BOOST,
+            )
+        )
 
     has_strong_validation_signal = (
         defines_exception
@@ -389,20 +614,145 @@ def _score_structured_failure_signals(*, chunk: CodeChunk, signals: FailureSigna
         or calls_relevant_guard
     )
     if not has_strong_validation_signal:
-        weak_signal_score = min(
-            weak_signal_score,
+        weak_components = _cap_components(
+            weak_components,
             _DID_NOT_RAISE_GENERIC_SIGNAL_CAP,
         )
 
-    score += weak_signal_score
+    components.extend(weak_components)
 
     if has_strong_validation_signal and chunk.chunk_type in {"function", "method"}:
-        score += _DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST
+        components.append(
+            ScoreComponent(
+                name="specific_source_chunk_boost",
+                value=_DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST,
+            )
+        )
 
     if chunk.chunk_type == "class" and not defines_exception:
-        score *= _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE
+        components = _scale_scoring_components(
+            components,
+            _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE,
+        )
 
-    return score
+    return tuple(components)
+
+
+def _scale_scoring_components(
+    components: list[ScoreComponent], factor: float
+) -> list[ScoreComponent]:
+    scaled: list[ScoreComponent] = []
+    for component in components:
+        if not component.contributes_to_score:
+            scaled.append(component)
+            continue
+        scaled.append(
+            ScoreComponent(
+                name=component.name,
+                value=component.value * factor,
+                details=component.details,
+                contributes_to_score=component.contributes_to_score,
+            )
+        )
+    return scaled
+
+
+def _cap_components(components: list[ScoreComponent], max_total: float) -> list[ScoreComponent]:
+    total = sum(component.value for component in components if component.contributes_to_score)
+    if total <= max_total or total <= 0:
+        return components
+    return _scale_scoring_components(components, max_total / total)
+
+
+def _is_generic_crud_or_data_access_chunk(chunk: CodeChunk) -> bool:
+    path = normalize_path(chunk.file_path)
+    path_parts = set(path.split("/"))
+    parent = (chunk.parent or "").lower()
+    name = chunk.name.lower().lstrip("_")
+
+    data_access_path = bool(
+        path_parts
+        & {
+            "dao",
+            "data",
+            "database",
+            "db",
+            "queries",
+            "repositories",
+            "repository",
+            "storage",
+            "stores",
+        }
+    )
+    data_access_parent = any(
+        marker in parent for marker in ("repository", "store", "storage", "dao")
+    )
+    crud_prefixes = (
+        "add",
+        "create",
+        "delete",
+        "fetch",
+        "find",
+        "get",
+        "insert",
+        "list",
+        "load",
+        "read",
+        "remove",
+        "save",
+        "select",
+        "update",
+        "write",
+    )
+    return (data_access_path or data_access_parent) and (
+        name in crud_prefixes or name.startswith(tuple(f"{prefix}_" for prefix in crud_prefixes))
+    )
+
+
+def _has_source_first_selection_signal(
+    *,
+    failure: TestFailure,
+    chunk: CodeChunk,
+    signals: FailureSignals,
+    message_symbols: set[str],
+    traceback_symbols: set[str],
+    extra_reasons: tuple[str, ...],
+) -> bool:
+    if is_test_path(chunk.file_path):
+        return False
+    if extra_reasons:
+        return True
+    if chunk.name in message_symbols or chunk.name in traceback_symbols:
+        return True
+
+    tokens = chunk_signal_tokens(chunk)
+    text_lower = chunk_signal_text(chunk).lower()
+    source_lower = chunk.source_code.lower()
+
+    if (
+        defines_expected_exception(chunk, signals)
+        or raises_expected_exception(chunk.source_code, signals)
+        or contains_expected_exception(text_lower, signals)
+        or relevant_exception_symbol_matches(tokens, signals)
+    ):
+        return True
+
+    if has_validation_name(chunk.name):
+        return True
+
+    if calls_relevant_validation_helper(chunk, signals):
+        return True
+
+    if calls_validation_helper(chunk):
+        failure_terms = (
+            set(signals.behavioral_words)
+            | set(signals.operation_words)
+            | set(signals.domain_words)
+        )
+        if tokens & failure_terms:
+            return True
+
+    return contains_raise_statement(source_lower) and bool(tokens & VALIDATION_WORDS)
 
 
 def _failure_mentions_test_infrastructure(failure: TestFailure) -> bool:
@@ -432,40 +782,13 @@ def _is_strong_failure_source(*, failure: TestFailure, result: SearchResult) -> 
     if is_test_path(chunk.file_path):
         return False
 
-    if result.reasons:
-        return True
-
     signals = extract_failure_signals(failure)
-    tokens = chunk_signal_tokens(chunk)
-    source_lower = chunk.source_code.lower()
-    text_lower = chunk_signal_text(chunk).lower()
-    message_symbols = extract_message_symbols(failure.message)
     traceback_symbols, _source_hints = extract_traceback_hints(failure.traceback)
-
-    if chunk.name in message_symbols or chunk.name in set(traceback_symbols):
-        return True
-
-    if (
-        defines_expected_exception(chunk, signals)
-        or raises_expected_exception(chunk.source_code, signals)
-        or contains_expected_exception(text_lower, signals)
-        or relevant_exception_symbol_matches(tokens, signals)
-    ):
-        return True
-
-    if has_validation_name(chunk.name):
-        return True
-
-    if calls_relevant_validation_helper(chunk, signals):
-        return True
-
-    if calls_validation_helper(chunk):
-        failure_terms = (
-            set(signals.behavioral_words)
-            | set(signals.operation_words)
-            | set(signals.domain_words)
-        )
-        if tokens & failure_terms:
-            return True
-
-    return contains_raise_statement(source_lower) and bool(tokens & VALIDATION_WORDS)
+    return _has_source_first_selection_signal(
+        failure=failure,
+        chunk=chunk,
+        signals=signals,
+        message_symbols=extract_message_symbols(failure.message),
+        traceback_symbols=set(traceback_symbols),
+        extra_reasons=result.reasons,
+    )
