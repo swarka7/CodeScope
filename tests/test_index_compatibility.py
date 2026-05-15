@@ -53,7 +53,7 @@ def test_stale_schema_version_requires_rebuild(tmp_path: Path) -> None:
 
 
 def test_stale_embedding_text_version_requires_rebuild(tmp_path: Path) -> None:
-    store = _write_index(tmp_path, _metadata(embedding_text_version=1))
+    store = _write_index(tmp_path, _metadata(embedding_text_version=EMBEDDING_TEXT_VERSION - 1))
 
     result = check_index_compatibility(
         index_store=store,

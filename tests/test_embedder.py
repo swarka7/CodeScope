@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codescope.embeddings.embedder import Embedder
+from codescope.embeddings.embedder import MAX_DEPENDENCIES_IN_EMBEDDING_TEXT, Embedder
 from codescope.models.code_chunk import CodeChunk
 
 
@@ -15,7 +15,7 @@ def test_embedding_text_formatting() -> None:
         end_line=20,
         source_code="def do_thing():\n    return 1\n",
         imports=["import os", "from typing import Any"],
-        dependencies=[],
+        dependencies=["validate_status_transition", "repository.get", "validate_status_transition"],
         decorators=['@app.post("/add")'],
     )
 
@@ -31,8 +31,35 @@ def test_embedding_text_formatting() -> None:
     assert '- @app.post("/add")' in text
     assert "FastAPI route handler: POST /add" in text
     assert "POST route endpoint" in text
+    assert "dependencies:" in text
+    assert "- validate_status_transition" in text
+    assert "- repository.get" in text
+    assert text.count("- validate_status_transition") == 1
     assert "source:" in text
     assert "def do_thing():" in text
+
+
+def test_embedding_text_caps_dependencies_deterministically() -> None:
+    dependencies = [
+        f"dependency_{number}" for number in range(MAX_DEPENDENCIES_IN_EMBEDDING_TEXT + 3)
+    ]
+    chunk = CodeChunk(
+        id="chunk-id",
+        file_path="src/example.py",
+        chunk_type="function",
+        name="do_thing",
+        parent=None,
+        start_line=1,
+        end_line=3,
+        source_code="def do_thing():\n    return 1\n",
+        imports=[],
+        dependencies=dependencies,
+    )
+
+    text = Embedder.build_embedding_text(chunk)
+
+    assert f"- dependency_{MAX_DEPENDENCIES_IN_EMBEDDING_TEXT - 1}" in text
+    assert f"- dependency_{MAX_DEPENDENCIES_IN_EMBEDDING_TEXT}" not in text
 
 
 def test_embedder_can_use_injected_model() -> None:

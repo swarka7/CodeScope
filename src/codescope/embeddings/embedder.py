@@ -6,6 +6,7 @@ from typing import Any
 from codescope.models.code_chunk import CodeChunk
 
 DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
+MAX_DEPENDENCIES_IN_EMBEDDING_TEXT = 12
 
 
 class Embedder:
@@ -39,6 +40,11 @@ class Embedder:
             if route_hints:
                 header.append("framework hints:")
                 header.extend(f"- {hint}" for hint in route_hints)
+
+        dependencies = _limited_unique(chunk.dependencies, limit=MAX_DEPENDENCIES_IN_EMBEDDING_TEXT)
+        if dependencies:
+            header.append("dependencies:")
+            header.extend(f"- {dependency}" for dependency in dependencies)
 
         header.append("source:")
         header.append(chunk.source_code.rstrip("\n"))
@@ -108,3 +114,17 @@ def _fastapi_route_hints(decorators: list[str]) -> list[str]:
         hints.append(f"FastAPI route handler: {method} {route}")
         hints.append(f"{method} route endpoint")
     return hints
+
+
+def _limited_unique(values: list[str], *, limit: int) -> list[str]:
+    seen: set[str] = set()
+    unique_values: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_values.append(normalized)
+        if len(unique_values) >= limit:
+            break
+    return unique_values
