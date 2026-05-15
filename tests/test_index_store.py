@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import codescope.indexing.index_store as index_store_module
 from codescope.cli import main as cli_main
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
@@ -60,6 +61,128 @@ def test_index_store_saves_and_loads_index(tmp_path: Path) -> None:
     assert loaded_embeddings == embeddings
     assert loaded_metadata == metadata
     assert loaded_chunks[0].dependencies == ["helper", "repo.save"]
+
+
+def test_atomic_save_writes_expected_files_and_cleans_temporary_files(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = IndexStore(repo_path)
+
+    store.save(
+        chunks=[
+            _chunk(
+                id="app",
+                file_path=(repo_path / "app.py").as_posix(),
+                chunk_type="function",
+                name="run",
+                dependencies=[],
+                imports=[],
+            )
+        ],
+        embeddings=[[1.0, 0.0]],
+        metadata={"schema_version": 1, "chunks_indexed": 1},
+    )
+
+    assert (store.index_dir / "chunks.json").is_file()
+    assert (store.index_dir / "embeddings.json").is_file()
+    assert (store.index_dir / "index_metadata.json").is_file()
+    assert _temporary_index_files(store) == []
+
+
+def test_failed_atomic_save_keeps_previous_valid_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = IndexStore(repo_path)
+
+    old_chunk = _chunk(
+        id="old",
+        file_path=(repo_path / "old.py").as_posix(),
+        chunk_type="function",
+        name="old_function",
+        dependencies=[],
+        imports=[],
+    )
+    old_embeddings = [[1.0, 0.0]]
+    old_metadata = {"schema_version": 1, "chunks_indexed": 1, "version": "old"}
+    store.save(chunks=[old_chunk], embeddings=old_embeddings, metadata=old_metadata)
+
+    actual_replace = index_store_module.os.replace
+    call_count = 0
+
+    def fail_during_commit(src: object, dst: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("simulated interrupted save")
+        actual_replace(src, dst)
+
+    monkeypatch.setattr(index_store_module.os, "replace", fail_during_commit)
+
+    with pytest.raises(OSError, match="simulated interrupted save"):
+        store.save(
+            chunks=[
+                _chunk(
+                    id="new",
+                    file_path=(repo_path / "new.py").as_posix(),
+                    chunk_type="function",
+                    name="new_function",
+                    dependencies=[],
+                    imports=[],
+                )
+            ],
+            embeddings=[[0.0, 1.0]],
+            metadata={"schema_version": 1, "chunks_indexed": 1, "version": "new"},
+        )
+
+    loaded_chunks, loaded_embeddings, loaded_metadata = store.load()
+    assert loaded_chunks == [old_chunk]
+    assert loaded_embeddings == old_embeddings
+    assert loaded_metadata == old_metadata
+    assert _temporary_index_files(store) == []
+
+
+def test_failed_atomic_save_without_previous_index_leaves_no_partial_final_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = IndexStore(repo_path)
+
+    actual_replace = index_store_module.os.replace
+    call_count = 0
+
+    def fail_after_first_final_replace(src: object, dst: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("simulated interrupted save")
+        actual_replace(src, dst)
+
+    monkeypatch.setattr(index_store_module.os, "replace", fail_after_first_final_replace)
+
+    with pytest.raises(OSError, match="simulated interrupted save"):
+        store.save(
+            chunks=[
+                _chunk(
+                    id="new",
+                    file_path=(repo_path / "new.py").as_posix(),
+                    chunk_type="function",
+                    name="new_function",
+                    dependencies=[],
+                    imports=[],
+                )
+            ],
+            embeddings=[[0.0, 1.0]],
+            metadata={"schema_version": 1, "chunks_indexed": 1},
+        )
+
+    assert store.exists() is False
+    assert not (store.index_dir / "chunks.json").exists()
+    assert not (store.index_dir / "embeddings.json").exists()
+    assert not (store.index_dir / "index_metadata.json").exists()
+    assert _temporary_index_files(store) == []
 
 
 def test_index_store_loads_old_chunks_without_decorators(tmp_path: Path) -> None:
@@ -200,4 +323,12 @@ def _chunk(
         source_code="pass\n",
         imports=imports,
         dependencies=dependencies,
+    )
+
+
+def _temporary_index_files(store: IndexStore) -> list[str]:
+    return sorted(
+        path.name
+        for path in store.index_dir.iterdir()
+        if path.name.endswith(".tmp") or path.name.endswith(".bak")
     )
