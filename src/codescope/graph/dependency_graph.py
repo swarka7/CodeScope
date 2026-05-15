@@ -16,6 +16,7 @@ class DependencyGraph:
 
     _chunks_by_name: dict[str, list[CodeChunk]]
     _resolver: SymbolResolver
+    _chunks: tuple[CodeChunk, ...]
 
     def __init__(self, chunks: list[CodeChunk]) -> None:
         chunks_by_name: dict[str, list[CodeChunk]] = {}
@@ -26,6 +27,7 @@ class DependencyGraph:
 
         object.__setattr__(self, "_chunks_by_name", chunks_by_name)
         object.__setattr__(self, "_resolver", SymbolResolver(chunks))
+        object.__setattr__(self, "_chunks", tuple(chunks))
 
     def related_chunks(self, chunk: CodeChunk) -> list[CodeChunk]:
         related: list[CodeChunk] = []
@@ -46,21 +48,56 @@ class DependencyGraph:
 
         candidates: list[tuple[str, CodeChunk]] = []
         for dep in chunk.dependencies:
-            resolved = self._resolver.resolve(dep, source_chunk=chunk)
-            if resolved:
-                for item in resolved:
-                    if item.chunk.id == chunk.id:
-                        continue
-                    candidates.append((item.matched_name, item.chunk))
-                continue
-
-            for candidate in _safe_exact_fallback_candidates(
-                dep, source_chunk=chunk, chunks_by_name=self._chunks_by_name
-            ):
+            for matched_name, candidate in self._resolve_dependency(dep, source_chunk=chunk):
                 if candidate.id == chunk.id:
                     continue
-                candidates.append((dep, candidate))
+                candidates.append((matched_name, candidate))
         return candidates
+
+    def reverse_candidates(self, chunk: CodeChunk) -> list[tuple[str, CodeChunk]]:
+        """Return (dependency_name, caller_chunk) pairs that resolve to the given chunk."""
+
+        callers: list[tuple[str, CodeChunk]] = []
+        seen: set[tuple[str, str]] = set()
+        for source in self._chunks:
+            if source.id == chunk.id:
+                continue
+            for dep in source.dependencies:
+                for matched_name, candidate in self._resolve_dependency(dep, source_chunk=source):
+                    if candidate.id != chunk.id:
+                        continue
+                    key = (matched_name, source.id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    callers.append((matched_name, source))
+
+        callers.sort(
+            key=lambda item: (
+                normalize_path(item[1].file_path),
+                item[1].chunk_type,
+                item[1].parent or "",
+                item[1].name,
+                item[0],
+            )
+        )
+        return callers
+
+    def _resolve_dependency(
+        self, dependency_name: str, *, source_chunk: CodeChunk
+    ) -> list[tuple[str, CodeChunk]]:
+        resolved = self._resolver.resolve(dependency_name, source_chunk=source_chunk)
+        if resolved:
+            return [(item.matched_name, item.chunk) for item in resolved]
+
+        return [
+            (dependency_name, candidate)
+            for candidate in _safe_exact_fallback_candidates(
+                dependency_name,
+                source_chunk=source_chunk,
+                chunks_by_name=self._chunks_by_name,
+            )
+        ]
 
 
 def _safe_exact_fallback_candidates(

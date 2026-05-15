@@ -66,6 +66,29 @@ def test_dependency_graph_exact_name_matching() -> None:
     assert [c.id for c in related] == [helper.id]
 
 
+def test_dependency_graph_reverse_candidates_find_callers() -> None:
+    validator = _chunk(
+        name="check_status",
+        chunk_type="function",
+        dependencies=[],
+        file_path="app/validators.py",
+    )
+    service = _chunk(
+        name="update_status",
+        chunk_type="function",
+        dependencies=["v.check_status"],
+        file_path="app/service.py",
+        imports=["import app.validators as v"],
+    )
+    graph = DependencyGraph([validator, service])
+
+    callers = graph.reverse_candidates(validator)
+
+    assert [(dependency, chunk.id) for dependency, chunk in callers] == [
+        ("check_status", service.id)
+    ]
+
+
 def test_search_enrichment_does_not_duplicate_results() -> None:
     helper = _chunk(name="helper", chunk_type="function", dependencies=[])
     main = _chunk(name="main", chunk_type="function", dependencies=["helper"])
@@ -568,6 +591,7 @@ def _chunk(
     dependencies: list[str],
     file_path: str = "file.py",
     parent: str | None = None,
+    imports: list[str] | None = None,
 ) -> CodeChunk:
     return CodeChunk(
         id=f"{chunk_type}:{name}",
@@ -578,6 +602,6 @@ def _chunk(
         start_line=1,
         end_line=1,
         source_code="pass\n",
-        imports=[],
+        imports=imports or [],
         dependencies=dependencies,
     )

@@ -243,6 +243,209 @@ def test_call_path_does_not_select_ambiguous_same_name_validator() -> None:
     assert admin_validator.id not in [result.chunk.id for result in results]
 
 
+def test_reverse_call_path_surfaces_business_caller_when_validator_is_seed() -> None:
+    validator = _chunk(
+        id="rules:validate",
+        file_path="billing/rules.py",
+        chunk_type="function",
+        name="validate_daily_limit",
+        dependencies=["DailyLimitExceeded"],
+        source_code=(
+            "def validate_daily_limit(account, amount):\n"
+            "    if account.daily_total + amount > account.daily_limit:\n"
+            "        raise DailyLimitExceeded()\n"
+        ),
+    )
+    caller = _chunk(
+        id="service:transfer",
+        file_path="billing/service.py",
+        chunk_type="method",
+        parent="TransferService",
+        name="transfer",
+        dependencies=["validate_daily_limit"],
+        source_code=(
+            "def transfer(self, account, amount):\n"
+            "    validate_daily_limit(account, amount)\n"
+            "    return self.repository.save(account)\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_daily_limit_failure(),
+        seed_results=[SearchResult(chunk=validator, score=5.0)],
+        graph=DependencyGraph([validator, caller]),
+    )
+
+    caller_result = _find(results, "transfer")
+    assert "reverse call-path context" in caller_result.reasons
+    assert "caller of validation helper" in caller_result.reasons
+    assert caller_result.score < 5.0
+
+
+def test_reverse_call_path_surfaces_validator_and_caller_from_exception_seed() -> None:
+    exception = _chunk(
+        id="rules:limit_error",
+        file_path="billing/rules.py",
+        chunk_type="class",
+        name="DailyLimitExceeded",
+        source_code="class DailyLimitExceeded(ValueError):\n    pass\n",
+    )
+    validator = _chunk(
+        id="rules:validate",
+        file_path="billing/rules.py",
+        chunk_type="function",
+        name="validate_daily_limit",
+        dependencies=["DailyLimitExceeded"],
+        source_code=(
+            "def validate_daily_limit(account, amount):\n"
+            "    raise DailyLimitExceeded()\n"
+        ),
+    )
+    caller = _chunk(
+        id="service:transfer",
+        file_path="billing/service.py",
+        chunk_type="method",
+        parent="TransferService",
+        name="transfer",
+        dependencies=["validate_daily_limit"],
+        source_code=(
+            "def transfer(self, account, amount):\n"
+            "    validate_daily_limit(account, amount)\n"
+            "    return self.repository.save(account)\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_daily_limit_failure(),
+        seed_results=[SearchResult(chunk=exception, score=9.0)],
+        graph=DependencyGraph([exception, validator, caller]),
+    )
+    names = [result.chunk.name for result in results]
+
+    assert names[:2] == ["validate_daily_limit", "transfer"]
+    assert _find(results, "validate_daily_limit").score > _find(results, "transfer").score
+    assert "caller of expected-exception logic" in _find(
+        results, "validate_daily_limit"
+    ).reasons
+
+
+def test_reverse_call_path_avoids_test_callers() -> None:
+    validator = _chunk(
+        id="rules:validate",
+        file_path="billing/rules.py",
+        chunk_type="function",
+        name="validate_daily_limit",
+        dependencies=["DailyLimitExceeded"],
+        source_code="def validate_daily_limit(account, amount):\n    raise DailyLimitExceeded()\n",
+    )
+    test_caller = _chunk(
+        id="tests:transfer",
+        file_path="tests/test_transfers.py",
+        chunk_type="function",
+        name="test_transfer_over_limit",
+        dependencies=["validate_daily_limit"],
+        source_code=(
+            "def test_transfer_over_limit():\n"
+            "    validate_daily_limit(account, amount)\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_daily_limit_failure(),
+        seed_results=[SearchResult(chunk=validator, score=5.0)],
+        graph=DependencyGraph([validator, test_caller]),
+    )
+
+    assert results == []
+
+
+def test_reverse_call_path_avoids_unrelated_same_name_callers() -> None:
+    app_validator = _chunk(
+        id="app:validator",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+    admin_validator = _chunk(
+        id="admin:validator",
+        file_path="admin/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+    caller = _chunk(
+        id="service:update",
+        file_path="app/service.py",
+        chunk_type="function",
+        name="update_status",
+        dependencies=["check_status"],
+        source_code=(
+            "def update_status(task, requested):\n"
+            "    check_status(task.status, requested)\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_did_not_raise_failure(),
+        seed_results=[SearchResult(chunk=app_validator, score=5.0)],
+        graph=DependencyGraph([app_validator, admin_validator, caller]),
+    )
+
+    assert results == []
+
+
+def test_reverse_call_path_respects_limits_and_ordering() -> None:
+    validator = _chunk(
+        id="rules:validate",
+        file_path="billing/rules.py",
+        chunk_type="function",
+        name="validate_daily_limit",
+        dependencies=["DailyLimitExceeded"],
+        source_code="def validate_daily_limit(account, amount):\n    raise DailyLimitExceeded()\n",
+    )
+    callers = [
+        _chunk(
+            id=f"service:{name}",
+            file_path=f"billing/{name}.py",
+            chunk_type="function",
+            name=name,
+            dependencies=["validate_daily_limit"],
+            source_code=(
+                f"def {name}(account, amount):\n"
+                "    validate_daily_limit(account, amount)\n"
+            ),
+        )
+        for name in ["transfer_c", "transfer_a", "transfer_b"]
+    ]
+
+    first = expand_failure_call_path_context(
+        failure=_daily_limit_failure(),
+        seed_results=[SearchResult(chunk=validator, score=5.0)],
+        graph=DependencyGraph([validator, *callers]),
+        max_reverse_callers_per_seed=2,
+        max_reverse_candidates=2,
+    )
+    second = expand_failure_call_path_context(
+        failure=_daily_limit_failure(),
+        seed_results=[SearchResult(chunk=validator, score=5.0)],
+        graph=DependencyGraph([validator, *callers]),
+        max_reverse_callers_per_seed=2,
+        max_reverse_candidates=2,
+    )
+
+    assert [result.chunk.id for result in first] == [result.chunk.id for result in second]
+    assert len(first) == 2
+
+
 def test_call_path_resolves_self_helper_method() -> None:
     service = _chunk(
         id="service:archive",
