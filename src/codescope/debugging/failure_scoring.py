@@ -291,6 +291,27 @@ def build_score_breakdown(
         signal_components = _scale_scoring_components(signal_components, 0.25)
     components.extend(signal_components)
 
+    component_names = {component.name for component in components}
+    if "validation_helper_name" not in component_names and has_validation_name(chunk.name):
+        components.append(
+            ScoreComponent(
+                name="validation_helper_name",
+                value=0.0,
+                details=(chunk.name,),
+                contributes_to_score=False,
+            )
+        )
+
+    if "calls_validation_helper" not in component_names and calls_validation_helper(chunk):
+        components.append(
+            ScoreComponent(
+                name="calls_validation_helper",
+                value=0.0,
+                details=("observed_non_scoring_signal",),
+                contributes_to_score=False,
+            )
+        )
+
     if _is_generic_crud_or_data_access_chunk(chunk):
         components.append(
             ScoreComponent(
@@ -593,7 +614,11 @@ def _structured_failure_signal_components(
     if has_validation_text and (expected_exception_in_source or relevant_exception_matches):
         components.append(
             ScoreComponent(
-                name="validation_raise_logic",
+                name=(
+                    "validation_raise_logic"
+                    if expected_exception_in_source
+                    else "validation_signal_overlap"
+                ),
                 value=_DID_NOT_RAISE_VALIDATION_TEXT_BOOST,
                 details=tuple(sorted(relevant_exception_matches)),
             )
@@ -601,7 +626,7 @@ def _structured_failure_signal_components(
     elif has_validation_text:
         components.append(
             ScoreComponent(
-                name="validation_text",
+                name="validation_signal_overlap",
                 value=_DID_NOT_RAISE_GENERIC_VALIDATION_TEXT_BOOST,
             )
         )

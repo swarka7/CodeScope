@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import re
 
-from codescope.debugging.failure_signals import (
-    calls_validation_helper,
-    chunk_signal_tokens,
-    contains_expected_exception,
-    defines_expected_exception,
-    extract_failure_signals,
-    has_validation_name,
-    raises_expected_exception,
+from codescope.debugging.failure_scoring import (
+    ScoreBreakdown,
+    build_score_breakdown,
 )
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
@@ -28,34 +23,17 @@ def build_retrieval_reasons(
     extra_reasons: tuple[str, ...] = (),
     limit: int = 4,
 ) -> list[str]:
-    signals = extract_failure_signals(failure)
-    tokens = chunk_signal_tokens(chunk)
+    breakdown = build_score_breakdown(
+        chunk=chunk,
+        base_score=0.0,
+        failure=failure,
+        extra_reasons=extra_reasons,
+    )
     reasons: list[str] = list(extra_reasons)
-
-    if defines_expected_exception(chunk, signals):
-        reasons.append("defines expected exception")
-
-    if raises_expected_exception(chunk.source_code, signals):
-        reasons.append("raises expected exception")
-    elif contains_expected_exception(chunk.source_code, signals):
-        reasons.append("contains expected exception")
-
-    if has_validation_name(chunk.name):
-        reasons.append("validation helper name")
-
-    if calls_validation_helper(chunk):
-        reasons.append("calls validation helper")
+    reasons.extend(_reasons_from_score_breakdown(breakdown))
 
     if _is_source_traceback_file(failure, chunk):
         reasons.append("source chunk from traceback file")
-
-    behavioral_overlap = _keyword_overlap(signals.behavioral_words, tokens)
-    if behavioral_overlap:
-        reasons.append(f"behavioral keyword overlap: {', '.join(behavioral_overlap)}")
-
-    operation_overlap = _keyword_overlap(signals.operation_words, tokens)
-    if operation_overlap:
-        reasons.append(f"operation keyword overlap: {', '.join(operation_overlap)}")
 
     deduped = _dedupe(reasons)
     if deduped:
@@ -69,9 +47,61 @@ def format_retrieval_reasons(
     return "; ".join(build_retrieval_reasons(failure, chunk, extra_reasons=extra_reasons))
 
 
-def _keyword_overlap(terms: tuple[str, ...], tokens: set[str], *, limit: int = 3) -> list[str]:
-    overlap = sorted(set(terms) & tokens)
-    return overlap[:limit]
+def _reasons_from_score_breakdown(breakdown: ScoreBreakdown) -> list[str]:
+    reasons: list[str] = []
+
+    if breakdown.by_name("expected_exception_definition"):
+        reasons.append("defines expected exception")
+
+    if breakdown.by_name("raises_expected_exception"):
+        reasons.append("raises expected exception")
+    elif breakdown.by_name("contains_expected_exception"):
+        reasons.append("contains expected exception")
+
+    if breakdown.by_name("validation_helper_name"):
+        reasons.append("validation helper name")
+
+    if breakdown.by_name("calls_validation_helper"):
+        reasons.append("calls validation helper")
+
+    if breakdown.by_name("same_file_source_hint"):
+        reasons.append("source chunk from traceback file")
+
+    for component_name, label in (
+        ("behavioral_keyword_overlap", "behavioral keyword overlap"),
+        ("operation_keyword_overlap", "operation keyword overlap"),
+    ):
+        values = _component_details(breakdown, component_name)
+        if values:
+            reasons.append(f"{label}: {', '.join(values)}")
+
+    if breakdown.by_name("validation_raise_logic"):
+        reasons.append("validation raise logic")
+
+    if breakdown.by_name("test_chunk_penalty"):
+        reasons.append("test context")
+
+    if breakdown.by_name("generic_crud_or_data_access_penalty"):
+        reasons.append("generic data-access signal")
+
+    return reasons
+
+
+def _component_details(
+    breakdown: ScoreBreakdown, component_name: str, *, limit: int = 3
+) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for component in breakdown.by_name(component_name):
+        for detail in component.details:
+            key = detail.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(detail)
+            if len(values) >= limit:
+                return values
+    return values
 
 
 def _is_source_traceback_file(failure: TestFailure, chunk: CodeChunk) -> bool:
