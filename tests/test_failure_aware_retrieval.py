@@ -424,6 +424,230 @@ def test_normal_assertion_ranking_still_prefers_source_symbol_from_traceback() -
     ]
 
 
+def test_assertion_ranking_prefers_state_mutation_service_over_repository_lookup() -> None:
+    failure = TestFailure(
+        test_name="tests/test_payments.py::test_transfer_moves_money_between_accounts",
+        file_path="tests/test_payments.py",
+        line_number=42,
+        error_type="AssertionError",
+        message="assert recipient balance changed after transfer",
+        traceback="",
+    )
+    service_transfer = _chunk(
+        id="service_transfer",
+        file_path="payments/service.py",
+        chunk_type="method",
+        parent="PaymentService",
+        name="transfer_funds",
+        dependencies=["get_account", "record_transfer"],
+        start_line=20,
+        end_line=35,
+        source_code=(
+            "def transfer_funds(self, sender_id, recipient_id, amount):\n"
+            "    sender = self.repository.get_account(sender_id)\n"
+            "    recipient = self.repository.get_account(recipient_id)\n"
+            "    sender.debit(amount)\n"
+            "    recipient.credit(amount)\n"
+            "    self.repository.record_transfer(sender, recipient, amount)\n"
+        ),
+    )
+    repository_get = _chunk(
+        id="repo_get",
+        file_path="payments/repository.py",
+        chunk_type="method",
+        parent="PaymentRepository",
+        name="get_account",
+        dependencies=[],
+        start_line=5,
+        end_line=7,
+        source_code="def get_account(self, account_id):\n    return self.accounts[account_id]\n",
+    )
+    repository_list = _chunk(
+        id="repo_list",
+        file_path="payments/repository.py",
+        chunk_type="method",
+        parent="PaymentRepository",
+        name="list_transfers",
+        dependencies=[],
+        start_line=10,
+        end_line=12,
+        source_code="def list_transfers(self):\n    return tuple(self.transfers)\n",
+    )
+    unrelated_exception = _chunk(
+        id="missing_account",
+        file_path="payments/exceptions.py",
+        chunk_type="class",
+        name="MissingAccountError",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code="class MissingAccountError(LookupError):\n    pass\n",
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=repository_get, score=1.0),
+            SearchResult(chunk=repository_list, score=0.98),
+            SearchResult(chunk=unrelated_exception, score=0.95),
+            SearchResult(chunk=service_transfer, score=0.76),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names[0] == "transfer_funds"
+    assert names.index("transfer_funds") < names.index("get_account")
+    assert names.index("transfer_funds") < names.index("list_transfers")
+    assert names.index("transfer_funds") < names.index("MissingAccountError")
+
+
+def test_assertion_ranking_prefers_filter_logic_over_route_and_repository_list() -> None:
+    failure = TestFailure(
+        test_name="tests/test_catalog.py::test_combined_filters_apply_genre_rating_and_year",
+        file_path="tests/test_catalog.py",
+        line_number=39,
+        error_type="AssertionError",
+        message="assert search results match genre rating year filters",
+        traceback="",
+    )
+    route = _chunk(
+        id="route",
+        file_path="catalog/routes.py",
+        chunk_type="function",
+        name="list_items",
+        dependencies=["search"],
+        start_line=5,
+        end_line=15,
+        source_code=(
+            "def list_items(service, criteria):\n"
+            "    payload = SearchCriteria(**criteria)\n"
+            "    return service.search(payload)\n"
+        ),
+    )
+    repository_list = _chunk(
+        id="repo_list",
+        file_path="catalog/repository.py",
+        chunk_type="method",
+        parent="CatalogRepository",
+        name="list_items",
+        dependencies=[],
+        start_line=5,
+        end_line=7,
+        source_code="def list_items(self):\n    return tuple(self.items.values())\n",
+    )
+    search = _chunk(
+        id="search",
+        file_path="catalog/search.py",
+        chunk_type="method",
+        parent="CatalogSearch",
+        name="search",
+        dependencies=["list_items"],
+        start_line=18,
+        end_line=35,
+        source_code=(
+            "def search(self, criteria):\n"
+            "    results = self.repository.list_items()\n"
+            "    results = [item for item in results if item.rating >= criteria.rating]\n"
+            "    results = [item for item in results if item.year == criteria.year]\n"
+            "    return sorted(results, key=lambda item: item.title)\n"
+        ),
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=route, score=1.0),
+            SearchResult(chunk=repository_list, score=0.96),
+            SearchResult(chunk=search, score=0.78),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names[0] == "search"
+    assert names.index("search") < names.index("list_items")
+    assert len({result.chunk.id for result in ranked}) == len(ranked)
+
+
+def test_did_not_raise_ranking_surfaces_operation_caller_near_validator() -> None:
+    failure = TestFailure(
+        test_name="tests/test_fulfillment.py::test_order_with_low_stock_cannot_ship",
+        file_path="tests/test_fulfillment.py",
+        line_number=52,
+        error_type="Failed",
+        message="Failed: DID NOT RAISE <class 'warehouse.policies.StockUnavailable'>",
+        traceback="",
+    )
+    exception = _chunk(
+        id="exception",
+        file_path="warehouse/policies.py",
+        chunk_type="class",
+        name="StockUnavailable",
+        dependencies=[],
+        start_line=5,
+        end_line=6,
+        source_code="class StockUnavailable(RuntimeError):\n    pass\n",
+    )
+    validator = _chunk(
+        id="validator",
+        file_path="warehouse/policies.py",
+        chunk_type="function",
+        name="require_inventory",
+        dependencies=["StockUnavailable"],
+        start_line=20,
+        end_line=23,
+        source_code=(
+            "def require_inventory(product, quantity):\n"
+            "    if product.available < quantity:\n"
+            "        raise StockUnavailable(product.sku)\n"
+        ),
+    )
+    ship_order = _chunk(
+        id="ship",
+        file_path="warehouse/service.py",
+        chunk_type="method",
+        parent="FulfillmentWorkflow",
+        name="ship_order",
+        dependencies=["get_order", "save_order"],
+        start_line=30,
+        end_line=39,
+        source_code=(
+            "def ship_order(self, order_id):\n"
+            "    order = self.repository.get_order(order_id)\n"
+            "    order.status = 'shipped'\n"
+            "    return self.repository.save_order(order)\n"
+        ),
+    )
+    create_order = _chunk(
+        id="create",
+        file_path="warehouse/service.py",
+        chunk_type="method",
+        parent="FulfillmentWorkflow",
+        name="create_order",
+        dependencies=["save_order"],
+        start_line=12,
+        end_line=17,
+        source_code=(
+            "def create_order(self, lines):\n"
+            "    return self.repository.save_order(lines)\n"
+        ),
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=create_order, score=1.0),
+            SearchResult(chunk=ship_order, score=0.92),
+            SearchResult(chunk=exception, score=0.75),
+            SearchResult(chunk=validator, score=0.70),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names.index("StockUnavailable") < names.index("ship_order")
+    assert names.index("require_inventory") < names.index("ship_order")
+    assert names.index("ship_order") < names.index("create_order")
+
+
 def test_diagnose_prints_tests_passed_when_no_failures(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

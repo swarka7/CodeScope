@@ -15,6 +15,7 @@ from codescope.debugging.failure_signals import (
     defines_expected_exception,
     extract_failure_signals,
     has_validation_name,
+    identifier_tokens,
     raises_expected_exception,
     relevant_exception_symbol_matches,
 )
@@ -63,6 +64,88 @@ _DID_NOT_RAISE_GENERIC_RAISE_BOOST = 0.10
 _DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST = 0.20
 _DID_NOT_RAISE_GENERIC_SIGNAL_CAP = 0.15
 _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE = 0.35
+_BUSINESS_OPERATION_BOOST = 0.75
+_DID_NOT_RAISE_BUSINESS_OPERATION_BOOST = 0.45
+_STATE_UPDATE_LOGIC_BOOST = 0.55
+_FILTERING_LOGIC_BOOST = 0.65
+_GENERIC_DATA_ACCESS_PENALTY = -0.90
+_ROUTE_OR_CONTROLLER_PENALTY = -0.35
+_CONSTRUCTOR_OR_INIT_PENALTY = -0.35
+_UNRELATED_EXCEPTION_CLASS_PENALTY = -0.35
+
+_BUSINESS_ROLE_WORDS = frozenset(
+    {
+        "business",
+        "domain",
+        "engine",
+        "interactor",
+        "manager",
+        "policy",
+        "policies",
+        "processor",
+        "rule",
+        "rules",
+        "search",
+        "service",
+        "usecase",
+        "workflow",
+    }
+)
+_ROUTE_OR_CONTROLLER_WORDS = frozenset(
+    {
+        "api",
+        "controller",
+        "controllers",
+        "endpoint",
+        "handler",
+        "route",
+        "routes",
+        "view",
+    }
+)
+_FILTERING_WORDS = frozenset(
+    {
+        "criteria",
+        "filter",
+        "list",
+        "match",
+        "query",
+        "rank",
+        "rating",
+        "result",
+        "results",
+        "search",
+        "sort",
+    }
+)
+_STATE_UPDATE_WORDS = frozenset(
+    {
+        "add",
+        "append",
+        "apply",
+        "assign",
+        "cancel",
+        "change",
+        "charge",
+        "clear",
+        "complete",
+        "credit",
+        "debit",
+        "delete",
+        "extend",
+        "insert",
+        "move",
+        "record",
+        "remove",
+        "reserve",
+        "save",
+        "set",
+        "ship",
+        "submit",
+        "transfer",
+        "update",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +368,11 @@ def build_score_breakdown(
             break
 
     signal_components = list(
-        _structured_failure_signal_components(chunk=chunk, signals=failure_signals)
+        _structured_failure_signal_components(
+            chunk=chunk,
+            signals=failure_signals,
+            primary_terms=_primary_failure_terms(failure),
+        )
     )
     if is_test_path(chunk.file_path):
         signal_components = _scale_scoring_components(signal_components, 0.25)
@@ -443,13 +530,19 @@ def failure_result_sort_key(
 def _score_structured_failure_signals(*, chunk: CodeChunk, signals: FailureSignals) -> float:
     return sum(
         component.value
-        for component in _structured_failure_signal_components(chunk=chunk, signals=signals)
+        for component in _structured_failure_signal_components(
+            chunk=chunk,
+            signals=signals,
+            primary_terms=set(signals.behavioral_words)
+            | set(signals.operation_words)
+            | set(signals.domain_words),
+        )
         if component.contributes_to_score
     )
 
 
 def _structured_failure_signal_components(
-    *, chunk: CodeChunk, signals: FailureSignals
+    *, chunk: CodeChunk, signals: FailureSignals, primary_terms: set[str]
 ) -> tuple[ScoreComponent, ...]:
     text = chunk_signal_text(chunk)
     text_lower = text.lower()
@@ -542,8 +635,17 @@ def _structured_failure_signal_components(
             )
         )
 
+    business_components = _business_behavior_components(
+        chunk=chunk,
+        signals=signals,
+        tokens=tokens,
+        source_lower=source_lower,
+        primary_terms=primary_terms,
+    )
+
     if not signals.did_not_raise:
         components.extend(weak_components)
+        components.extend(business_components)
         return tuple(components)
 
     if raises_exception:
@@ -646,6 +748,19 @@ def _structured_failure_signal_components(
 
     components.extend(weak_components)
 
+    did_not_raise_business_components = [
+        component
+        for component in business_components
+        if component.name == "business_operation"
+    ]
+    components.extend(
+        _scale_named_components(
+            did_not_raise_business_components,
+            factor=_DID_NOT_RAISE_BUSINESS_OPERATION_BOOST / _BUSINESS_OPERATION_BOOST,
+            new_name="business_operation",
+        )
+    )
+
     if has_strong_validation_signal and chunk.chunk_type in {"function", "method"}:
         components.append(
             ScoreComponent(
@@ -689,6 +804,271 @@ def _cap_components(components: list[ScoreComponent], max_total: float) -> list[
     return _scale_scoring_components(components, max_total / total)
 
 
+def _scale_named_components(
+    components: list[ScoreComponent], *, factor: float, new_name: str
+) -> list[ScoreComponent]:
+    scaled: list[ScoreComponent] = []
+    for component in components:
+        scaled.append(
+            ScoreComponent(
+                name=new_name,
+                value=component.value * factor,
+                details=component.details,
+                contributes_to_score=component.contributes_to_score,
+            )
+        )
+    return scaled
+
+
+def _primary_failure_terms(failure: TestFailure) -> set[str]:
+    text = "\n".join(
+        [
+            failure.test_name,
+            failure.file_path,
+            failure.error_type or "",
+            failure.message,
+        ]
+    )
+    return identifier_tokens(text)
+
+
+def _business_behavior_components(
+    *,
+    chunk: CodeChunk,
+    signals: FailureSignals,
+    tokens: set[str],
+    source_lower: str,
+    primary_terms: set[str],
+) -> list[ScoreComponent]:
+    if chunk.chunk_type not in {"function", "method"}:
+        return _non_operation_penalty_components(
+            chunk=chunk,
+            signals=signals,
+            tokens=tokens,
+            primary_terms=primary_terms,
+        )
+
+    components: list[ScoreComponent] = []
+    name_terms = identifier_tokens(chunk.name)
+    if chunk.parent:
+        name_terms.update(identifier_tokens(chunk.parent))
+
+    meaningful_primary_terms = _meaningful_failure_terms(primary_terms, signals)
+    name_matches = sorted(name_terms & meaningful_primary_terms)
+    source_matches = sorted((tokens & meaningful_primary_terms) - set(name_matches))
+    action_terms = _primary_action_terms(primary_terms=primary_terms, signals=signals)
+    action_name_matches = sorted(name_terms & action_terms)
+    has_business_role = _has_business_role(chunk)
+    has_state_logic = _has_state_update_logic(chunk, source_lower=source_lower)
+    has_filter_logic = _has_filtering_logic(chunk, tokens=tokens, source_lower=source_lower)
+    is_data_access = _is_generic_crud_or_data_access_chunk(chunk)
+    is_route_passthrough = _is_route_or_controller_passthrough(chunk)
+    is_constructor = _is_constructor_or_initializer(chunk)
+
+    if action_name_matches and not is_data_access and not is_constructor and (
+        has_business_role or has_state_logic or has_filter_logic
+    ):
+        components.append(
+            ScoreComponent(
+                name="business_operation",
+                value=_BUSINESS_OPERATION_BOOST,
+                details=tuple(action_name_matches[:3]),
+            )
+        )
+
+    if (
+        has_state_logic
+        and (name_matches or source_matches)
+        and not is_data_access
+        and not is_constructor
+    ):
+        components.append(
+            ScoreComponent(
+                name="state_update_logic",
+                value=_STATE_UPDATE_LOGIC_BOOST,
+                details=tuple((name_matches or source_matches)[:3]),
+            )
+        )
+
+    if has_filter_logic and (name_matches or source_matches) and not is_constructor:
+        components.append(
+            ScoreComponent(
+                name="filtering_logic",
+                value=_FILTERING_LOGIC_BOOST,
+                details=tuple((name_matches or source_matches)[:3]),
+            )
+        )
+
+    if _has_business_failure_context(primary_terms=primary_terms, signals=signals):
+        if is_data_access:
+            components.append(
+                ScoreComponent(
+                    name="generic_crud_or_data_access_penalty",
+                    value=_GENERIC_DATA_ACCESS_PENALTY,
+                )
+            )
+        if is_route_passthrough:
+            components.append(
+                ScoreComponent(
+                    name="route_or_controller_passthrough_penalty",
+                    value=_ROUTE_OR_CONTROLLER_PENALTY,
+                )
+            )
+        if is_constructor:
+            components.append(
+                ScoreComponent(
+                    name="constructor_or_init_penalty",
+                    value=_CONSTRUCTOR_OR_INIT_PENALTY,
+                )
+            )
+
+    return components
+
+
+def _non_operation_penalty_components(
+    *,
+    chunk: CodeChunk,
+    signals: FailureSignals,
+    tokens: set[str],
+    primary_terms: set[str],
+) -> list[ScoreComponent]:
+    if not _has_business_failure_context(primary_terms=primary_terms, signals=signals):
+        return []
+
+    if chunk.chunk_type == "class" and _looks_like_exception_class(chunk):
+        if not defines_expected_exception(chunk, signals) and not contains_expected_exception(
+            chunk_signal_text(chunk).lower(), signals
+        ):
+            return [
+                ScoreComponent(
+                    name="unrelated_exception_class_penalty",
+                    value=_UNRELATED_EXCEPTION_CLASS_PENALTY,
+                    details=tuple(sorted(tokens & {"error", "exception"})),
+                )
+            ]
+
+    return []
+
+
+def _meaningful_failure_terms(primary_terms: set[str], signals: FailureSignals) -> set[str]:
+    return (
+        primary_terms
+        | set(signals.operation_words)
+        | set(signals.behavioral_words)
+        | set(signals.domain_words)
+    ) - {
+        "assert",
+        "assertion",
+        "error",
+        "failed",
+        "failure",
+        "false",
+        "none",
+        "test",
+        "tests",
+        "true",
+    }
+
+
+def _has_business_failure_context(*, primary_terms: set[str], signals: FailureSignals) -> bool:
+    terms = _meaningful_failure_terms(primary_terms, signals)
+    return bool(
+        terms
+        & (
+            set(signals.operation_words)
+            | set(signals.behavioral_words)
+            | _FILTERING_WORDS
+            | _STATE_UPDATE_WORDS
+        )
+    )
+
+
+def _primary_action_terms(*, primary_terms: set[str], signals: FailureSignals) -> set[str]:
+    return (
+        primary_terms
+        & (
+            set(signals.operation_words)
+            | set(signals.behavioral_words)
+            | _FILTERING_WORDS
+            | _STATE_UPDATE_WORDS
+        )
+    )
+
+
+def _has_business_role(chunk: CodeChunk) -> bool:
+    return bool(_chunk_role_terms(chunk) & _BUSINESS_ROLE_WORDS)
+
+
+def _is_route_or_controller_passthrough(chunk: CodeChunk) -> bool:
+    if not (_chunk_role_terms(chunk) & _ROUTE_OR_CONTROLLER_WORDS):
+        return False
+    source = chunk.source_code.lower()
+    if _has_state_update_logic(chunk, source_lower=source):
+        return False
+    if _has_filtering_logic(chunk, tokens=chunk_signal_tokens(chunk), source_lower=source):
+        return False
+    return "return " in source and len(source.splitlines()) <= 20
+
+
+def _has_state_update_logic(chunk: CodeChunk, *, source_lower: str) -> bool:
+    assignment_pattern = (
+        r"\b(?:self\.)?[A-Za-z_]\w*(?:\.[A-Za-z_]\w+|\[[^\]]+\])\s*"
+        r"(?:\+=|-=|(?<![=!<>])=(?!=))"
+    )
+    if re.search(assignment_pattern, source_lower):
+        return True
+
+    simple_assignment_pattern = r"\b[A-Za-z_]\w*\s*(?:\+=|-=|(?<![=!<>])=(?!=))"
+    if re.search(simple_assignment_pattern, source_lower):
+        return bool(chunk_signal_tokens(chunk) & _STATE_UPDATE_WORDS)
+
+    method_call_match = re.search(
+        r"\.(?P<name>add|append|apply|assign|cancel|change|charge|clear|complete|credit|"
+        r"debit|delete|extend|insert|move|record|remove|reserve|save|set|ship|submit|"
+        r"transfer|update)\s*\(",
+        source_lower,
+    )
+    return method_call_match is not None
+
+
+def _has_filtering_logic(chunk: CodeChunk, *, tokens: set[str], source_lower: str) -> bool:
+    if not tokens & _FILTERING_WORDS:
+        return False
+
+    filter_patterns = (
+        r"\bfor\b.+\bif\b",
+        r"\bfilter\s*\(",
+        r"\bsorted\s*\(",
+        r"\bwhere\b",
+        r"\bmatches\b",
+    )
+    if any(re.search(pattern, source_lower, flags=re.DOTALL) for pattern in filter_patterns):
+        return True
+
+    comparison_patterns = (">=", "<=", "==", "!=", " in ", " not in ")
+    return any(pattern in source_lower for pattern in comparison_patterns)
+
+
+def _is_constructor_or_initializer(chunk: CodeChunk) -> bool:
+    name = chunk.name.lower()
+    return name in {"__init__", "init", "initialize"}
+
+
+def _looks_like_exception_class(chunk: CodeChunk) -> bool:
+    name_tokens = identifier_tokens(chunk.name)
+    source_tokens = identifier_tokens(chunk.source_code)
+    return bool((name_tokens | source_tokens) & {"error", "exception"})
+
+
+def _chunk_role_terms(chunk: CodeChunk) -> set[str]:
+    terms: set[str] = set()
+    terms.update(identifier_tokens(chunk.file_path))
+    terms.update(identifier_tokens(chunk.name))
+    if chunk.parent:
+        terms.update(identifier_tokens(chunk.parent))
+    return terms
+
+
 def _is_generic_crud_or_data_access_chunk(chunk: CodeChunk) -> bool:
     path = normalize_path(chunk.file_path)
     path_parts = set(path.split("/"))
@@ -723,6 +1103,7 @@ def _is_generic_crud_or_data_access_chunk(chunk: CodeChunk) -> bool:
         "list",
         "load",
         "read",
+        "record",
         "remove",
         "save",
         "select",

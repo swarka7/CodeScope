@@ -462,12 +462,15 @@ def _call_path_score(
     elif candidate.chunk_type == "class" and not defines_expected_exception(candidate, signals):
         score -= 1.0
 
+    if not signals.did_not_raise and _is_generic_data_access_candidate(candidate):
+        score -= 1.4
+
     if "called by traceback source" in reasons:
         score += 0.4
     if "called by top source chunk" in reasons:
         score += 0.2
 
-    return score
+    return max(score, 0.0)
 
 
 def _reverse_call_path_score(
@@ -556,6 +559,52 @@ def _has_business_source_role(chunk: CodeChunk) -> bool:
 
     name_tokens = chunk_signal_tokens(chunk)
     return bool((path_tokens | name_tokens) & role_words)
+
+
+def _is_generic_data_access_candidate(chunk: CodeChunk) -> bool:
+    path = normalize_path(chunk.file_path)
+    role_terms: set[str] = set()
+    for part in path.replace("/", "_").split("_"):
+        role_terms.update(identifier_tokens(part))
+    if chunk.parent:
+        role_terms.update(identifier_tokens(chunk.parent))
+
+    data_access_role = bool(
+        role_terms
+        & {
+            "dao",
+            "data",
+            "database",
+            "db",
+            "queries",
+            "repository",
+            "storage",
+            "store",
+        }
+    )
+    if not data_access_role:
+        return False
+
+    name = chunk.name.lower().lstrip("_")
+    crud_prefixes = (
+        "add",
+        "create",
+        "delete",
+        "fetch",
+        "find",
+        "get",
+        "insert",
+        "list",
+        "load",
+        "read",
+        "record",
+        "remove",
+        "save",
+        "select",
+        "update",
+        "write",
+    )
+    return name in crud_prefixes or name.startswith(tuple(f"{prefix}_" for prefix in crud_prefixes))
 
 
 def _update_best(best_by_id: dict[str, SearchResult], candidate: SearchResult) -> None:

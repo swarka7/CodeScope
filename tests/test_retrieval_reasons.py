@@ -161,6 +161,55 @@ def test_reasons_include_generic_data_access_signal_when_present() -> None:
     assert "data-access context" in reasons
 
 
+def test_reasons_include_business_state_update_and_filtering_logic() -> None:
+    state_reasons = build_retrieval_reasons(
+        TestFailure(
+            test_name="tests/test_payments.py::test_transfer_moves_money_between_accounts",
+            file_path="tests/test_payments.py",
+            line_number=10,
+            error_type="AssertionError",
+            message="assert recipient balance changed after transfer",
+            traceback="",
+        ),
+        _chunk(
+            name="transfer_funds",
+            file_path="payments/service.py",
+            parent="PaymentService",
+            source_code=(
+                "def transfer_funds(self, sender, recipient, amount):\n"
+                "    sender.debit(amount)\n"
+                "    recipient.credit(amount)\n"
+            ),
+        ),
+        limit=6,
+    )
+    filter_reasons = build_retrieval_reasons(
+        TestFailure(
+            test_name="tests/test_catalog.py::test_combined_filters_apply_all_criteria",
+            file_path="tests/test_catalog.py",
+            line_number=10,
+            error_type="AssertionError",
+            message="assert search results match rating filters",
+            traceback="",
+        ),
+        _chunk(
+            name="apply_filters",
+            file_path="catalog/search.py",
+            parent="CatalogSearch",
+            source_code=(
+                "def apply_filters(self, criteria):\n"
+                "    return [item for item in self.items if item.rating >= criteria.rating]\n"
+            ),
+        ),
+        limit=6,
+    )
+
+    assert "business operation" in state_reasons
+    assert "state update logic" in state_reasons
+    assert "business operation" in filter_reasons
+    assert "filtering logic" in filter_reasons
+
+
 def test_reasons_fall_back_to_semantic_similarity() -> None:
     reasons = build_retrieval_reasons(
         _did_not_raise_failure(),

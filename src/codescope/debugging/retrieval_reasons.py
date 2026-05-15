@@ -84,6 +84,15 @@ def _reasons_from_score_breakdown(breakdown: ScoreBreakdown) -> list[str]:
     if breakdown.by_name("generic_crud_or_data_access_penalty"):
         reasons.append("data-access context")
 
+    if breakdown.by_name("business_operation"):
+        reasons.append("business operation")
+
+    if breakdown.by_name("state_update_logic"):
+        reasons.append("state update logic")
+
+    if breakdown.by_name("filtering_logic"):
+        reasons.append("filtering logic")
+
     return reasons
 
 

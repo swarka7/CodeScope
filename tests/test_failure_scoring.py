@@ -129,6 +129,95 @@ def test_breakdown_final_score_matches_score_failure_chunk() -> None:
     )
 
 
+def test_breakdown_records_business_state_update_logic() -> None:
+    breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="service_transfer",
+            file_path="payments/service.py",
+            chunk_type="method",
+            parent="PaymentService",
+            name="transfer_funds",
+            source_code=(
+                "def transfer_funds(self, sender, recipient, amount):\n"
+                "    sender.debit(amount)\n"
+                "    recipient.credit(amount)\n"
+                "    self.ledger.record(sender, recipient, amount)\n"
+            ),
+        ),
+        base_score=0.8,
+        failure=_failure(
+            message="assert recipient balance was updated",
+            test_name="tests/test_payments.py::test_transfer_moves_money_between_accounts",
+        ),
+    )
+
+    assert breakdown.by_name("business_operation")
+    assert breakdown.by_name("state_update_logic")
+
+
+def test_breakdown_records_filtering_logic() -> None:
+    breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="catalog_search",
+            file_path="catalog/search.py",
+            chunk_type="method",
+            parent="CatalogSearch",
+            name="apply_filters",
+            source_code=(
+                "def apply_filters(self, criteria):\n"
+                "    results = [item for item in self.items if item.rating >= criteria.rating]\n"
+                "    return sorted(results, key=lambda item: item.title)\n"
+            ),
+        ),
+        base_score=0.7,
+        failure=_failure(
+            message="assert search results match genre and rating filters",
+            test_name="tests/test_catalog.py::test_combined_filters_apply_all_criteria",
+        ),
+    )
+
+    assert breakdown.by_name("business_operation")
+    assert breakdown.by_name("filtering_logic")
+
+
+def test_business_failure_penalizes_data_access_and_init_chunks() -> None:
+    repository_breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="repo_get",
+            file_path="orders/repository.py",
+            chunk_type="method",
+            parent="OrderRepository",
+            name="get_order",
+            source_code="def get_order(self, order_id):\n    return self.orders[order_id]\n",
+        ),
+        base_score=1.0,
+        failure=_failure(
+            message="assert order total was updated",
+            test_name="tests/test_orders.py::test_update_order_total",
+        ),
+    )
+    init_breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="service_init",
+            file_path="orders/service.py",
+            chunk_type="method",
+            parent="OrderService",
+            name="__init__",
+            source_code="def __init__(self, repository):\n    self.repository = repository\n",
+        ),
+        base_score=1.0,
+        failure=_failure(
+            message="assert order total was updated",
+            test_name="tests/test_orders.py::test_update_order_total",
+        ),
+    )
+
+    assert repository_breakdown.by_name("generic_crud_or_data_access_penalty")
+    assert init_breakdown.by_name("constructor_or_init_penalty")
+    assert repository_breakdown.final_score < 1.1
+    assert init_breakdown.final_score < 1.1
+
+
 def _did_not_raise(exception_name: str) -> TestFailure:
     return _failure(
         error_type="Failed",
@@ -136,9 +225,14 @@ def _did_not_raise(exception_name: str) -> TestFailure:
     )
 
 
-def _failure(*, message: str, error_type: str = "AssertionError") -> TestFailure:
+def _failure(
+    *,
+    message: str,
+    error_type: str = "AssertionError",
+    test_name: str = "tests/test_example.py::test_example",
+) -> TestFailure:
     return TestFailure(
-        test_name="tests/test_example.py::test_example",
+        test_name=test_name,
         file_path="tests/test_example.py",
         line_number=10,
         error_type=error_type,
