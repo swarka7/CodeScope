@@ -235,6 +235,10 @@ def _handle_diagnose(repo_path: Path) -> int:
     print()
 
     failures = FailureParser().parse(combined_output)
+    if not failures:
+        if combined_output:
+            print(combined_output)
+        return run_result.exit_code
 
     index_store = IndexStore(repo_path)
     if not index_store.exists():
@@ -264,9 +268,6 @@ def _handle_diagnose(repo_path: Path) -> int:
         print("Likely relevant code:")
         _print_retrieval_results(results, repo_path=repo_path)
         print()
-
-    if not failures and combined_output:
-        print(combined_output)
 
     return run_result.exit_code
 

@@ -25,13 +25,13 @@ CodeScope explores practical “repository intelligence” and failure-aware dia
 - Repository scanning
 - AST-based code parsing
 - Function/class/method chunk extraction
-- Import/dependency extraction
+- Import/dependency/decorator extraction
 - Semantic search with embeddings
-- Dependency-aware retrieval
-- Persistent local indexing (`.codescope/`)
+- Multi-hop dependency-aware retrieval
+- Persistent and incremental local indexing (`.codescope/`)
 - Pytest runner
 - Failure parsing
-- Failure-aware diagnosis (`diagnose`)
+- Failure-aware diagnosis with rule-based summaries (`diagnose`)
 
 ## Architecture
 
@@ -56,6 +56,7 @@ Failure-Aware Diagnosis
 ## Current limitations
 
 - Symbol resolution is heuristic/static (basic imports + aliases + same-file hints) and does not perform full Python type inference or dynamic import execution.
+- Local indexes use readable JSON storage; incompatible index or embedding-text versions currently trigger rebuilds rather than migrations.
 
 ## Installation
 
@@ -128,6 +129,11 @@ Expected output (example):
 Tests failed
 [FAIL] tests/test_calculator.py::test_calculate_discount_applies_percent
 Message: calculate_discount(100, 10) returned -900 instead of 90
+
+Diagnosis summary:
+- Failing test: test_calculate_discount_applies_percent
+- Failure signal: AssertionError, calculate_discount(100, 10) returned -900 instead of 90
+- Most relevant source chunk: calculate_discount in calculator.py
 
 Likely relevant code:
 [semantic] [function] calculate_discount calculator.py:4-16

@@ -224,15 +224,6 @@ def _sorted_file_metadata(file_meta_by_path: dict[str, dict[str, Any]]) -> list[
     return [file_meta_by_path[path] for path in sorted(file_meta_by_path)]
 
 
-def _fingerprints_match(old: dict[str, Any], current: dict[str, Any]) -> bool:
-    return (
-        isinstance(old.get("mtime_ns"), int)
-        and isinstance(old.get("size"), int)
-        and old.get("mtime_ns") == current.get("mtime_ns")
-        and old.get("size") == current.get("size")
-    )
-
-
 def _group_by_file(
     chunks: list[CodeChunk], embeddings: list[list[float]], *, repo_path: Path
 ) -> dict[str, list[tuple[CodeChunk, list[float]]]]:
