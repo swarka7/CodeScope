@@ -8,12 +8,13 @@ from pathlib import Path
 from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.debugging.issue_hypothesis import build_issue_hypothesis
-from codescope.debugging.retrieval_reasons import format_retrieval_reasons
+from codescope.debugging.retrieval_reasons import build_retrieval_reasons
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
+from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
@@ -222,10 +223,10 @@ def _handle_diagnose(repo_path: Path) -> int:
     combined_output = "\n".join([run_result.stdout, run_result.stderr]).strip()
 
     if run_result.exit_code == 0:
-        print("Tests passed")
+        _print_diagnose_status("Tests passed")
         return 0
 
-    print("Tests failed")
+    _print_diagnose_status("Tests failed")
     print()
 
     failures = FailureParser().parse(combined_output)
@@ -251,12 +252,7 @@ def _handle_diagnose(repo_path: Path) -> int:
     retriever = FailureRetriever(repo_path)
 
     for failure in failures:
-        print(f"[FAIL] {failure.test_name}")
-        if failure.error_type:
-            print(f"Error: {failure.error_type}")
-        if failure.message:
-            print(f"Message: {failure.message}")
-        print()
+        _print_failure_details(failure)
 
         if not compatibility.compatible:
             print(compatibility.message, file=sys.stderr)
@@ -267,53 +263,110 @@ def _handle_diagnose(repo_path: Path) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+
         print(build_diagnosis_summary(failure, results))
         hypothesis = build_issue_hypothesis(failure, results)
         if hypothesis:
             print()
             print(hypothesis)
         print()
-        print("Likely relevant code:")
-        _print_retrieval_results(results, repo_path=repo_path, failure=failure)
+        _print_retrieval_sections(results, repo_path=repo_path, failure=failure)
         print()
 
     return run_result.exit_code
 
 
-def _print_retrieval_results(
+def _print_diagnose_status(status: str) -> None:
+    print("CodeScope Diagnose")
+    print()
+    print("Status")
+    print(f"- {status}")
+
+
+def _print_failure_details(failure: TestFailure) -> None:
+    print("Failing test")
+    print(f"- [FAIL] {failure.test_name}")
+
+    location = _failure_location(failure)
+    if location:
+        print(f"- File: {location}")
+
+    print()
+    print("Failure signal")
+    if failure.error_type:
+        print(f"- Error: {failure.error_type}")
+    if failure.message:
+        print(f"- Message: {failure.message}")
+    print()
+
+
+def _failure_location(failure: TestFailure) -> str:
+    if not failure.file_path:
+        return ""
+    if failure.line_number is None:
+        return failure.file_path
+    return f"{failure.file_path}:{failure.line_number}"
+
+
+def _print_retrieval_sections(
     results: list[RetrievalResult], *, repo_path: Path, failure: TestFailure | None = None
 ) -> None:
-    for result in results:
-        chunk = result.chunk
-        kind = result.kind
-        score = result.score
+    semantic_results = [result for result in results if result.kind == "semantic"]
+    related_results = [result for result in results if result.kind == "related"]
 
-        if chunk.chunk_type == "method" and chunk.parent:
-            chunk_name = f"{chunk.parent}.{chunk.name}"
-        else:
-            chunk_name = chunk.name
+    print("Likely relevant code:")
+    _print_retrieval_results(semantic_results, repo_path=repo_path, failure=failure)
+    print()
+    print("Related context:")
+    _print_retrieval_results(related_results, repo_path=repo_path, failure=failure)
 
-        try:
-            display_path = Path(chunk.file_path).relative_to(repo_path).as_posix()
-        except ValueError:
-            display_path = chunk.file_path
 
-        location = f"{display_path}:{chunk.start_line}-{chunk.end_line}"
-        kind_tag = f"[{kind}]".ljust(10)
-        type_tag = f"[{chunk.chunk_type}]"
+def _print_retrieval_results(
+    results: list[RetrievalResult], *, repo_path: Path, failure: TestFailure | None
+) -> None:
+    if not results:
+        print("- None")
+        return
 
-        if kind == "semantic" and score is not None:
-            line = f"{kind_tag} {type_tag} {chunk_name} {location} score={score:.2f}"
-        else:
-            line = f"{kind_tag} {type_tag} {chunk_name} {location}"
+    for rank, result in enumerate(results, start=1):
+        _print_retrieval_result(rank, result, repo_path=repo_path, failure=failure)
 
-        if failure is not None:
-            line = (
-                f"{line} reasons="
-                f"{format_retrieval_reasons(failure, chunk, extra_reasons=result.reasons)}"
-            )
 
-        print(line)
+def _print_retrieval_result(
+    rank: int, result: RetrievalResult, *, repo_path: Path, failure: TestFailure | None
+) -> None:
+    chunk = result.chunk
+    chunk_name = _chunk_display_name(chunk)
+    location = _chunk_location(chunk, repo_path=repo_path)
+
+    print(f"{rank}. {chunk_name}")
+    print(f"   Kind: {chunk.chunk_type}")
+    print(f"   Location: {location}")
+    print(f"   Source: {result.kind}")
+    if result.score is not None:
+        print(f"   Score: {result.score:.2f}")
+
+    if failure is None:
+        return
+
+    reasons = build_retrieval_reasons(failure, chunk, extra_reasons=result.reasons)
+    print("   reasons=")
+    for reason in reasons:
+        print(f"     - {reason}")
+
+
+def _chunk_display_name(chunk: CodeChunk) -> str:
+    if chunk.chunk_type == "method" and chunk.parent:
+        return f"{chunk.parent}.{chunk.name}"
+    return chunk.name
+
+
+def _chunk_location(chunk: CodeChunk, *, repo_path: Path) -> str:
+    try:
+        display_path = Path(chunk.file_path).relative_to(repo_path).as_posix()
+    except ValueError:
+        display_path = chunk.file_path
+    return f"{display_path}:{chunk.start_line}-{chunk.end_line}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

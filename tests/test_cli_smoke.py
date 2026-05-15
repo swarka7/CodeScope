@@ -137,11 +137,22 @@ def test_diagnose_auth_service_output_contract(
     captured = capsys.readouterr()
 
     assert diagnose_exit == 1
+    assert "CodeScope Diagnose" in captured.out
+    assert "Status" in captured.out
     assert "Tests failed" in captured.out
+    assert "Failing test" in captured.out
+    assert "[FAIL] tests/test_auth_service.py::test_expired_token_is_rejected" in captured.out
+    assert "Failure signal" in captured.out
     assert "Diagnosis summary:" in captured.out
     assert "Most relevant source chunk:" in captured.out
     assert "Possible issue:" in captured.out
     assert "Likely relevant code:" in captured.out
+    assert "Related context:" in captured.out
+    assert "1. validate_token" in captured.out
+    assert "Kind: function" in captured.out
+    assert "Location: auth_service.py:1-2" in captured.out
+    assert "Source: semantic" in captured.out
+    assert "Score:" in captured.out
     assert "reasons=" in captured.out
     assert "validation helper name" in captured.out
     assert "validate_token" in captured.out

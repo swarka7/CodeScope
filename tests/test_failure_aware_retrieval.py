@@ -444,7 +444,9 @@ def test_diagnose_prints_tests_passed_when_no_failures(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert captured.out.strip() == "Tests passed"
+    assert "CodeScope Diagnose" in captured.out
+    assert "Status" in captured.out
+    assert "Tests passed" in captured.out
 
 
 def test_diagnose_requires_index_when_tests_fail(
@@ -669,10 +671,20 @@ def test_diagnose_outputs_failure_summary_and_likely_relevant_code(
     captured = capsys.readouterr()
 
     assert exit_code == 1
+    assert "CodeScope Diagnose" in captured.out
     assert "Tests failed" in captured.out
+    assert "Failing test" in captured.out
     assert "[FAIL] tests/test_example.py::test_invalid_token" in captured.out
+    assert "Failure signal" in captured.out
     assert "Diagnosis summary:" in captured.out
     assert "Likely relevant code:" in captured.out
+    assert "Related context:" in captured.out
+    assert "1. validate_token" in captured.out
+    assert "Kind: function" in captured.out
+    assert "Location:" in captured.out
+    assert "Source: semantic" in captured.out
+    assert "Score:" in captured.out
+    assert "reasons=" in captured.out
     assert "validate_token" in captured.out
 
 

@@ -216,7 +216,8 @@ def test_diagnose_works_for_buggy_calculator_relative_path(
     captured = capsys.readouterr()
 
     assert exit_code == 2
-    assert captured.out.startswith("Tests failed")
+    assert "CodeScope Diagnose" in captured.out
+    assert "Tests failed" in captured.out
     assert "confcutdir must be a directory" not in (captured.out + captured.err)
     assert captured.err.strip() == (
         "No CodeScope index found. Run: python -m codescope.cli index <repo_path>"

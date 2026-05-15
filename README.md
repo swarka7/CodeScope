@@ -83,7 +83,7 @@ python -m codescope.cli search examples/buggy_auth_service "expired token valida
 python -m codescope.cli diagnose examples/buggy_auth_service
 ```
 
-The diagnosis output should include `Diagnosis summary`, `Possible issue`, `Likely relevant code`, and deterministic `reasons=...` explanations.
+The diagnosis output should include `CodeScope Diagnose`, `Diagnosis summary`, `Possible issue`, `Likely relevant code`, `Related context`, and deterministic `reasons=...` explanations.
 See the full walkthrough in [`docs/demo.md`](docs/demo.md).
 
 ## Current limitations
@@ -153,11 +153,18 @@ More detail: see [`docs/failure_aware_diagnosis.md`](docs/failure_aware_diagnosi
 Diagnose output is designed to show the failure, a concise summary, a cautious rule-based hypothesis, and the code chunks CodeScope retrieved with deterministic reasons:
 
 ```text
-Tests failed
+CodeScope Diagnose
 
-[FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
-Error: AssertionError
-Message: assert True is False
+Status
+- Tests failed
+
+Failing test
+- [FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
+- File: tests/test_auth_service.py:12
+
+Failure signal
+- Error: AssertionError
+- Message: assert True is False
 
 Diagnosis summary:
 - Failing test: test_expired_token_is_rejected
@@ -171,9 +178,23 @@ Possible issue:
 - This is a hypothesis based on the failure signal and retrieved code, not a proven root cause.
 
 Likely relevant code:
-[semantic] [function] validate_token auth_service.py:12-20 score=1.42 reasons=validation helper name; source chunk from traceback file; behavioral keyword overlap: expired, rejected
-[related]  [function] decode_token token_manager.py:8-15 reasons=semantic similarity
-[related]  [class] TokenPayload models.py:5-10 reasons=semantic similarity
+1. validate_token
+   Kind: function
+   Location: auth_service.py:12-20
+   Source: semantic
+   Score: 1.42
+   reasons=
+     - validation helper name
+     - source chunk from traceback file
+     - behavioral keyword overlap: expired, rejected
+
+Related context:
+1. decode_token
+   Kind: function
+   Location: token_manager.py:8-15
+   Source: related
+   reasons=
+     - semantic similarity
 ```
 
 The exact scores and ordering may change as the retrieval heuristics improve, but the output contract is intentionally explainable and deterministic.
@@ -192,9 +213,16 @@ python -m codescope.cli diagnose examples/buggy_calculator
 Expected output (example):
 
 ```text
-Tests failed
-[FAIL] tests/test_calculator.py::test_calculate_discount_applies_percent
-Message: calculate_discount(100, 10) returned -900 instead of 90
+CodeScope Diagnose
+
+Status
+- Tests failed
+
+Failing test
+- [FAIL] tests/test_calculator.py::test_calculate_discount_applies_percent
+
+Failure signal
+- Message: calculate_discount(100, 10) returned -900 instead of 90
 
 Diagnosis summary:
 - Failing test: test_calculate_discount_applies_percent
@@ -202,7 +230,10 @@ Diagnosis summary:
 - Most relevant source chunk: calculate_discount in calculator.py
 
 Likely relevant code:
-[semantic] [function] calculate_discount calculator.py:4-16
+1. calculate_discount
+   Kind: function
+   Location: calculator.py:4-16
+   Source: semantic
 ```
 
 ### Buggy auth service (more realistic)

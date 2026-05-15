@@ -58,11 +58,17 @@ python -m codescope.cli diagnose examples/buggy_auth_service
 Expected output shape:
 
 ```text
-Tests failed
+CodeScope Diagnose
 
-[FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
-Error: AssertionError
-Message: assert True is False
+Status
+- Tests failed
+
+Failing test
+- [FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
+
+Failure signal
+- Error: AssertionError
+- Message: assert True is False
 
 Diagnosis summary:
 - Failing test: test_expired_token_is_rejected
@@ -76,16 +82,29 @@ Possible issue:
 - This is a hypothesis based on the failure signal and retrieved code, not a proven root cause.
 
 Likely relevant code:
-[semantic] [function] validate_token auth_service.py:... score=... reasons=validation helper name; behavioral keyword overlap: expired, rejected
-[related]  [function] decode_token token_manager.py:... reasons=semantic similarity
-[related]  [class] TokenPayload models.py:... reasons=semantic similarity
+1. validate_token
+   Kind: function
+   Location: auth_service.py:...
+   Source: semantic
+   Score: ...
+   reasons=
+     - validation helper name
+     - behavioral keyword overlap: expired, rejected
+
+Related context:
+1. decode_token
+   Kind: function
+   Location: token_manager.py:...
+   Source: related
+   reasons=
+     - semantic similarity
 ```
 
 Scores can vary slightly depending on embedding behavior, but the important contract is:
 
 - Diagnosis summary is printed.
 - A cautious possible issue may be printed when rule-based signals are strong enough.
-- Likely relevant code is listed.
+- Likely relevant code and related context are listed in readable sections.
 - Each result includes deterministic `reasons=...` text.
 
 ## What the demo proves

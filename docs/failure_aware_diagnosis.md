@@ -47,6 +47,18 @@ These reasons are rule-based and are meant to make the ranking auditable. They a
 ## Example
 
 ```text
+CodeScope Diagnose
+
+Status
+- Tests failed
+
+Failing test
+- [FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
+
+Failure signal
+- Error: AssertionError
+- Message: assert True is False
+
 Diagnosis summary:
 - Failing test: test_expired_token_is_rejected
 - Failure signal: AssertionError, assert True is False
@@ -59,9 +71,23 @@ Possible issue:
 - This is a hypothesis based on the failure signal and retrieved code, not a proven root cause.
 
 Likely relevant code:
-[semantic] [function] validate_token auth_service.py:12-20 score=1.42 reasons=validation helper name; source chunk from traceback file; behavioral keyword overlap: expired, rejected
-[related]  [function] decode_token token_manager.py:8-15 reasons=semantic similarity
-[related]  [class] TokenPayload models.py:5-10 reasons=semantic similarity
+1. validate_token
+   Kind: function
+   Location: auth_service.py:12-20
+   Source: semantic
+   Score: 1.42
+   reasons=
+     - validation helper name
+     - source chunk from traceback file
+     - behavioral keyword overlap: expired, rejected
+
+Related context:
+1. decode_token
+   Kind: function
+   Location: token_manager.py:8-15
+   Source: related
+   reasons=
+     - semantic similarity
 ```
 
 ## Design constraints
