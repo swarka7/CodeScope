@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from codescope.graph.symbol_resolver import SymbolResolver
 from codescope.models.code_chunk import CodeChunk
+from codescope.utils.path_utils import normalize_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +54,28 @@ class DependencyGraph:
                     candidates.append((item.matched_name, item.chunk))
                 continue
 
-            for candidate in self._chunks_by_name.get(dep, []):
+            for candidate in _safe_exact_fallback_candidates(
+                dep, source_chunk=chunk, chunks_by_name=self._chunks_by_name
+            ):
                 if candidate.id == chunk.id:
                     continue
                 candidates.append((dep, candidate))
         return candidates
+
+
+def _safe_exact_fallback_candidates(
+    dependency_name: str,
+    *,
+    source_chunk: CodeChunk,
+    chunks_by_name: dict[str, list[CodeChunk]],
+) -> list[CodeChunk]:
+    candidates = chunks_by_name.get(dependency_name, [])
+    if len(candidates) <= 1:
+        return candidates
+
+    source_path = normalize_path(source_chunk.file_path)
+    same_file = [chunk for chunk in candidates if normalize_path(chunk.file_path) == source_path]
+    if same_file:
+        return same_file
+
+    return []

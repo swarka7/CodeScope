@@ -56,6 +56,193 @@ def test_call_path_expands_service_to_imported_validator_and_exception() -> None
     assert "validation helper on call path" in validator_result.reasons
 
 
+def test_call_path_resolves_validator_through_module_alias_import() -> None:
+    service = _chunk(
+        id="service:update",
+        file_path="app/service.py",
+        chunk_type="function",
+        name="update_status",
+        imports=["import app.validators as v"],
+        dependencies=["v.check_status", "check_status"],
+        source_code=(
+            "def update_status(task, requested):\n"
+            "    v.check_status(task.status, requested)\n"
+            "    task.status = requested\n"
+        ),
+    )
+    validator = _chunk(
+        id="app:validator",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+    unrelated_validator = _chunk(
+        id="admin:validator",
+        file_path="admin/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_did_not_raise_failure(),
+        seed_results=[SearchResult(chunk=service, score=1.0)],
+        graph=DependencyGraph([service, validator, unrelated_validator]),
+    )
+
+    assert validator.id in [result.chunk.id for result in results]
+    assert unrelated_validator.id not in [result.chunk.id for result in results]
+
+
+def test_call_path_resolves_validator_through_from_import_alias() -> None:
+    service = _chunk(
+        id="service:update",
+        file_path="app/service.py",
+        chunk_type="function",
+        name="update_status",
+        imports=["from app.validators import check_status as check"],
+        dependencies=["check"],
+        source_code=(
+            "def update_status(task, requested):\n"
+            "    check(task.status, requested)\n"
+            "    task.status = requested\n"
+        ),
+    )
+    validator = _chunk(
+        id="app:validator",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+    unrelated_validator = _chunk(
+        id="admin:validator",
+        file_path="admin/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_did_not_raise_failure(),
+        seed_results=[SearchResult(chunk=service, score=1.0)],
+        graph=DependencyGraph([service, validator, unrelated_validator]),
+    )
+
+    assert validator.id in [result.chunk.id for result in results]
+    assert unrelated_validator.id not in [result.chunk.id for result in results]
+
+
+def test_call_path_follows_controller_to_service_to_relative_imported_validator() -> None:
+    route = _chunk(
+        id="route:update",
+        file_path="app/routes.py",
+        chunk_type="function",
+        name="update_task_status",
+        imports=["from app.service import update_status"],
+        dependencies=["update_status"],
+        source_code=(
+            "def update_task_status(task, requested):\n"
+            "    return update_status(task, requested)\n"
+        ),
+    )
+    service = _chunk(
+        id="service:update",
+        file_path="app/service.py",
+        chunk_type="function",
+        name="update_status",
+        imports=["from .validators import check_status"],
+        dependencies=["check_status"],
+        source_code=(
+            "def update_status(task, requested):\n"
+            "    check_status(task.status, requested)\n"
+            "    task.status = requested\n"
+        ),
+    )
+    validator = _chunk(
+        id="app:validator",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_did_not_raise_failure(),
+        seed_results=[SearchResult(chunk=route, score=1.0)],
+        graph=DependencyGraph([route, service, validator]),
+    )
+
+    assert [result.chunk.id for result in results[:2]] == [validator.id, service.id]
+
+
+def test_call_path_does_not_select_ambiguous_same_name_validator() -> None:
+    service = _chunk(
+        id="service:update",
+        file_path="app/service.py",
+        chunk_type="function",
+        name="update_status",
+        dependencies=["check_status"],
+        source_code=(
+            "def update_status(task, requested):\n"
+            "    check_status(task.status, requested)\n"
+            "    task.status = requested\n"
+        ),
+    )
+    app_validator = _chunk(
+        id="app:validator",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+    admin_validator = _chunk(
+        id="admin:validator",
+        file_path="admin/validators.py",
+        chunk_type="function",
+        name="check_status",
+        dependencies=["InvalidStatusTransitionError"],
+        source_code=(
+            "def check_status(current, requested):\n"
+            "    raise InvalidStatusTransitionError()\n"
+        ),
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_did_not_raise_failure(),
+        seed_results=[SearchResult(chunk=service, score=1.0)],
+        graph=DependencyGraph([service, app_validator, admin_validator]),
+    )
+
+    assert app_validator.id not in [result.chunk.id for result in results]
+    assert admin_validator.id not in [result.chunk.id for result in results]
+
+
 def test_call_path_resolves_self_helper_method() -> None:
     service = _chunk(
         id="service:archive",
