@@ -508,8 +508,62 @@ class FailureRetriever:
         if call_path_context:
             semantic_ranked = _merge_search_results(semantic_ranked, call_path_context)
 
-        semantic = semantic_ranked[:top_k]
+        semantic = self.select_semantic_results_for_failure(
+            failure=failure,
+            ranked_results=semantic_ranked,
+            top_k=top_k,
+        )
         return enrich_with_related(query=query, semantic_results=semantic, graph=graph)
+
+    @staticmethod
+    def select_semantic_results_for_failure(
+        *, failure: TestFailure, ranked_results: list[SearchResult], top_k: int
+    ) -> list[SearchResult]:
+        """Select final diagnose semantic roots with source chunks before test chunks.
+
+        Failing tests often have the strongest raw semantic match because the
+        failure query contains the test name and assertion text. For diagnosis,
+        once strong source evidence exists, implementation chunks are better
+        semantic roots for dependency expansion; the failing test remains visible
+        in the failure summary instead of competing with likely root-cause code.
+        """
+        if top_k <= 0:
+            return []
+
+        if _failure_mentions_test_infrastructure(failure):
+            return ranked_results[:top_k]
+
+        source_results = [
+            result for result in ranked_results if not is_test_path(result.chunk.file_path)
+        ]
+        if not source_results:
+            return ranked_results[:top_k]
+
+        strong_source_exists = any(
+            _is_strong_failure_source(failure=failure, result=result)
+            for result in source_results
+        )
+        if not strong_source_exists:
+            return ranked_results[:top_k]
+
+        selected: list[SearchResult] = []
+        selected_ids: set[str] = set()
+
+        for result in source_results:
+            selected.append(result)
+            selected_ids.add(result.chunk.id)
+            if len(selected) >= top_k:
+                return selected
+
+        for result in ranked_results:
+            if result.chunk.id in selected_ids:
+                continue
+            selected.append(result)
+            selected_ids.add(result.chunk.id)
+            if len(selected) >= top_k:
+                break
+
+        return selected
 
 
 def _failure_result_sort_key(
@@ -565,3 +619,73 @@ def _merge_reasons(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, 
         seen.add(key)
         merged.append(reason)
     return tuple(merged)
+
+
+def _failure_mentions_test_infrastructure(failure: TestFailure) -> bool:
+    text = " ".join(
+        [
+            failure.test_name,
+            failure.error_type or "",
+            failure.message,
+            failure.traceback,
+        ]
+    ).lower()
+    test_infra_terms = {
+        "capfd",
+        "caplog",
+        "capsys",
+        "fixture",
+        "monkeypatch",
+        "mock",
+        "tmp_path",
+        "unittest",
+    }
+    return any(term in text for term in test_infra_terms)
+
+
+def _is_strong_failure_source(*, failure: TestFailure, result: SearchResult) -> bool:
+    chunk = result.chunk
+    if is_test_path(chunk.file_path):
+        return False
+
+    if result.reasons:
+        return True
+
+    signals = extract_failure_signals(failure)
+    tokens = chunk_signal_tokens(chunk)
+    source_lower = chunk.source_code.lower()
+    text_lower = chunk_signal_text(chunk).lower()
+    message_symbols = FailureRetriever._extract_message_symbols(failure.message)
+    traceback_symbols, _source_hints = FailureRetriever._extract_traceback_hints(
+        failure.traceback,
+        max_symbols=FailureRetriever._MAX_TRACEBACK_SYMBOLS,
+        max_source_hints=FailureRetriever._MAX_SOURCE_HINTS,
+    )
+
+    if chunk.name in message_symbols or chunk.name in set(traceback_symbols):
+        return True
+
+    if (
+        defines_expected_exception(chunk, signals)
+        or raises_expected_exception(chunk.source_code, signals)
+        or contains_expected_exception(text_lower, signals)
+        or relevant_exception_symbol_matches(tokens, signals)
+    ):
+        return True
+
+    if has_validation_name(chunk.name):
+        return True
+
+    if calls_relevant_validation_helper(chunk, signals):
+        return True
+
+    if calls_validation_helper(chunk):
+        failure_terms = (
+            set(signals.behavioral_words)
+            | set(signals.operation_words)
+            | set(signals.domain_words)
+        )
+        if tokens & failure_terms:
+            return True
+
+    return contains_raise_statement(source_lower) and bool(tokens & VALIDATION_WORDS)
