@@ -5,6 +5,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
@@ -252,13 +253,15 @@ def _handle_diagnose(repo_path: Path) -> int:
         if failure.message:
             print(f"Message: {failure.message}")
         print()
-        print("Likely relevant code:")
 
         try:
             results = retriever.retrieve(failure, top_k=5)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        print(build_diagnosis_summary(failure, results))
+        print()
+        print("Likely relevant code:")
         _print_retrieval_results(results, repo_path=repo_path)
         print()
 

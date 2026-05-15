@@ -355,6 +355,7 @@ def test_diagnose_outputs_failure_summary_and_likely_relevant_code(
     assert exit_code == 1
     assert "Tests failed" in captured.out
     assert "[FAIL] tests/test_example.py::test_invalid_token" in captured.out
+    assert "Diagnosis summary:" in captured.out
     assert "Likely relevant code:" in captured.out
     assert "validate_token" in captured.out
 
