@@ -32,7 +32,7 @@ class MemoryStore:
             SearchResult(chunk=chunk, score=cosine_similarity(query_embedding, embedding))
             for chunk, embedding in self._items
         ]
-        scored.sort(key=lambda r: r.score, reverse=True)
+        scored.sort(key=_search_sort_key)
         return scored[:top_k]
 
 
@@ -53,3 +53,13 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
     return dot / ((norm_a**0.5) * (norm_b**0.5))
 
+
+def _search_sort_key(result: SearchResult) -> tuple[float, str, int, str, str]:
+    chunk = result.chunk
+    return (
+        -result.score,
+        chunk.file_path,
+        chunk.start_line,
+        chunk.id,
+        chunk.name,
+    )

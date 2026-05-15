@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import codescope.cli as cli_module
+import codescope.debugging.failure_retriever as failure_retriever_module
 import codescope.indexing.indexer as indexer_module
 from codescope.models.code_chunk import CodeChunk
 
@@ -96,8 +97,56 @@ def test_diagnose_no_tests_does_not_require_index(
     assert "no tests ran" in output.lower() or "collected 0 items" in output.lower()
 
 
+def test_diagnose_auth_service_output_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_fake_embedder(monkeypatch)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "auth_service.py").write_text(
+        "\n".join(
+            [
+                "def validate_token(token: str) -> bool:",
+                "    return True",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    tests_dir = repo_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_auth_service.py").write_text(
+        "\n".join(
+            [
+                "from auth_service import validate_token",
+                "",
+                "def test_expired_token_is_rejected() -> None:",
+                "    result = validate_token('expired')",
+                "    assert result is False",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    index_exit = cli_module.main(["index", str(repo_path)])
+    capsys.readouterr()
+    assert index_exit == 0
+
+    diagnose_exit = cli_module.main(["diagnose", str(repo_path)])
+    captured = capsys.readouterr()
+
+    assert diagnose_exit == 1
+    assert "Tests failed" in captured.out
+    assert "Diagnosis summary:" in captured.out
+    assert "Most relevant source chunk:" in captured.out
+    assert "Likely relevant code:" in captured.out
+    assert "validate_token" in captured.out
+
+
 def _patch_fake_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "Embedder", _FakeEmbedder)
+    monkeypatch.setattr(failure_retriever_module, "Embedder", _FakeEmbedder)
     monkeypatch.setattr(indexer_module, "Embedder", _FakeEmbedder)
 
 
@@ -121,6 +170,11 @@ def _vector(text: str) -> list[float]:
     lower = text.lower()
     return [
         1.0 if "todo" in lower else 0.0,
-        1.0 if "creat" in lower or "post" in lower or "endpoint" in lower else 0.0,
+        1.0
+        if "creat" in lower
+        or "post" in lower
+        or "endpoint" in lower
+        or "validate_token" in lower
+        else 0.0,
         1.0 if "save" in lower else 0.0,
     ]
