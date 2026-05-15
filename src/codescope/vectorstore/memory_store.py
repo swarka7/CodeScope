@@ -9,6 +9,7 @@ from codescope.models.code_chunk import CodeChunk
 class SearchResult:
     chunk: CodeChunk
     score: float
+    reasons: tuple[str, ...] = ()
 
 
 class MemoryStore:

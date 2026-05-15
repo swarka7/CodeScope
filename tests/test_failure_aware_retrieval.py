@@ -7,11 +7,13 @@ import pytest
 import codescope.cli as cli_module
 from codescope.cli import main as cli_main
 from codescope.debugging.failure_retriever import FailureRetriever
+from codescope.debugging.failure_signals import extract_failure_signals
 from codescope.embeddings.embedder import Embedder
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
+from codescope.vectorstore.memory_store import SearchResult
 
 
 def test_failure_query_construction() -> None:
@@ -106,6 +108,320 @@ def test_failure_query_without_traceback_still_contains_core_context() -> None:
     assert "AssertionError" in query
     assert "expected 401 but got 200" in query
     assert "tests/test_auth.py:42" in query
+
+
+def test_failure_signals_extract_expected_exception_and_intent_words() -> None:
+    failure = TestFailure(
+        test_name="tests/test_tasks.py::test_archived_task_cannot_be_marked_done",
+        file_path="tests/test_tasks.py",
+        line_number=10,
+        error_type="Failed",
+        message="Failed: DID NOT RAISE <class 'app.validators.InvalidStatusTransitionError'>",
+        traceback="",
+    )
+
+    signals = extract_failure_signals(failure)
+
+    assert signals.did_not_raise is True
+    assert "InvalidStatusTransitionError" in signals.expected_exceptions
+    assert {"invalid", "status", "transition", "error", "validators"} <= set(
+        signals.exception_symbols
+    )
+    assert {"archived", "cannot"} <= set(signals.behavioral_words)
+    assert "mark" in signals.operation_words
+
+
+def test_did_not_raise_ranking_prefers_transition_validation_over_action_wrapper() -> None:
+    failure = TestFailure(
+        test_name="tests/test_task_service.py::test_archived_task_cannot_be_marked_done",
+        file_path="tests/test_task_service.py",
+        line_number=61,
+        error_type="Failed",
+        message="Failed: DID NOT RAISE <class 'app.validators.InvalidStatusTransitionError'>",
+        traceback="",
+    )
+    archive_task = _chunk(
+        id="archive",
+        file_path="app/service.py",
+        chunk_type="method",
+        parent="TaskService",
+        name="archive_task",
+        dependencies=["update_status"],
+        start_line=30,
+        end_line=32,
+        source_code=(
+            "def archive_task(self, task_id, owner_id):\n"
+            "    return self.update_status(task_id, owner_id, TaskStatus.ARCHIVED)\n"
+        ),
+    )
+    update_status = _chunk(
+        id="update",
+        file_path="app/service.py",
+        chunk_type="method",
+        parent="TaskService",
+        name="update_status",
+        dependencies=["validate_status_transition"],
+        start_line=36,
+        end_line=42,
+        source_code=(
+            "def update_status(self, task_id, owner_id, status):\n"
+            "    task = self._get_owned_task(task_id, owner_id)\n"
+            "    validate_status_transition(task.status, status)\n"
+            "    task.status = status\n"
+            "    return self.repository.save(task)\n"
+        ),
+    )
+    validate_transition = _chunk(
+        id="validate",
+        file_path="app/validators.py",
+        chunk_type="function",
+        name="validate_status_transition",
+        dependencies=["InvalidStatusTransitionError"],
+        start_line=20,
+        end_line=27,
+        source_code=(
+            "def validate_status_transition(current, requested):\n"
+            "    if requested not in ALLOWED_TRANSITIONS[current]:\n"
+            "        raise InvalidStatusTransitionError('invalid transition')\n"
+        ),
+    )
+    exception_class = _chunk(
+        id="invalid_transition_error",
+        file_path="app/validators.py",
+        chunk_type="class",
+        name="InvalidStatusTransitionError",
+        dependencies=[],
+        start_line=8,
+        end_line=9,
+        source_code="class InvalidStatusTransitionError(ValueError):\n    pass\n",
+    )
+    service_class = _chunk(
+        id="task_service_class",
+        file_path="app/service.py",
+        chunk_type="class",
+        name="TaskService",
+        dependencies=["update_status", "archive_task", "validate_status_transition"],
+        start_line=10,
+        end_line=45,
+        source_code=(
+            "class TaskService:\n"
+            "    def create_task(self, title):\n"
+            "        return self.repository.create(title)\n"
+            "    def archive_task(self, task_id):\n"
+            "        return self.update_status(task_id, TaskStatus.ARCHIVED)\n"
+            "    def update_status(self, task_id, status):\n"
+            "        validate_status_transition(task.status, status)\n"
+        ),
+    )
+    test_chunk = _chunk(
+        id="test",
+        file_path="tests/test_task_service.py",
+        chunk_type="function",
+        name="test_archived_task_cannot_be_marked_done",
+        dependencies=["archive_task", "InvalidStatusTransitionError"],
+        start_line=56,
+        end_line=62,
+        source_code=(
+            "def test_archived_task_cannot_be_marked_done():\n"
+            "    with pytest.raises(InvalidStatusTransitionError):\n"
+            "        service.complete_task(task.id)\n"
+        ),
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=service_class, score=1.0),
+            SearchResult(chunk=archive_task, score=1.0),
+            SearchResult(chunk=test_chunk, score=0.98),
+            SearchResult(chunk=update_status, score=0.85),
+            SearchResult(chunk=exception_class, score=0.78),
+            SearchResult(chunk=validate_transition, score=0.75),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names[0] == "validate_status_transition"
+    assert names.index("InvalidStatusTransitionError") < names.index("archive_task")
+    assert names.index("validate_status_transition") < names.index("archive_task")
+    assert names.index("update_status") < names.index("archive_task")
+    assert names.index("TaskService") > names.index("validate_status_transition")
+    assert names.index("test_archived_task_cannot_be_marked_done") > 0
+    assert len({result.chunk.id for result in ranked}) == len(ranked)
+
+
+def test_did_not_raise_ranking_prefers_business_rule_guards() -> None:
+    failure = TestFailure(
+        test_name="tests/test_transfers.py::test_transfer_over_daily_limit_should_be_rejected",
+        file_path="tests/test_transfers.py",
+        line_number=44,
+        error_type="Failed",
+        message="Failed: DID NOT RAISE <class 'banking.rules.DailyLimitExceeded'>",
+        traceback="",
+    )
+    create_account = _chunk(
+        id="create",
+        file_path="banking/accounts.py",
+        chunk_type="function",
+        name="create_account",
+        dependencies=[],
+        start_line=1,
+        end_line=3,
+        source_code="def create_account(owner_id):\n    return Account(owner_id=owner_id)\n",
+    )
+    transfer = _chunk(
+        id="transfer",
+        file_path="banking/service.py",
+        chunk_type="method",
+        parent="TransferService",
+        name="transfer",
+        dependencies=["validate_daily_limit", "record_transfer"],
+        start_line=20,
+        end_line=30,
+        source_code=(
+            "def transfer(self, account, amount):\n"
+            "    validate_daily_limit(account, amount)\n"
+            "    return self.repository.record_transfer(account, amount)\n"
+        ),
+    )
+    validate_daily_limit = _chunk(
+        id="validate_limit",
+        file_path="banking/rules.py",
+        chunk_type="function",
+        name="validate_daily_limit",
+        dependencies=["DailyLimitExceeded"],
+        start_line=10,
+        end_line=15,
+        source_code=(
+            "def validate_daily_limit(account, amount):\n"
+            "    if account.daily_total + amount > account.daily_limit:\n"
+            "        raise DailyLimitExceeded(account.id)\n"
+        ),
+    )
+    limit_exception = _chunk(
+        id="daily_limit_exception",
+        file_path="banking/rules.py",
+        chunk_type="class",
+        name="DailyLimitExceeded",
+        dependencies=[],
+        start_line=5,
+        end_line=6,
+        source_code="class DailyLimitExceeded(ValueError):\n    pass\n",
+    )
+    transfer_service_class = _chunk(
+        id="transfer_service_class",
+        file_path="banking/service.py",
+        chunk_type="class",
+        name="TransferService",
+        dependencies=["transfer", "validate_daily_limit"],
+        start_line=15,
+        end_line=32,
+        source_code=(
+            "class TransferService:\n"
+            "    def transfer(self, account, amount):\n"
+            "        validate_daily_limit(account, amount)\n"
+            "        return self.repository.record_transfer(account, amount)\n"
+        ),
+    )
+    account_history = _chunk(
+        id="history",
+        file_path="banking/history.py",
+        chunk_type="function",
+        name="list_account_history",
+        dependencies=[],
+        start_line=1,
+        end_line=3,
+        source_code="def list_account_history(account_id):\n    return []\n",
+    )
+    test_chunk = _chunk(
+        id="test_transfer",
+        file_path="tests/test_transfers.py",
+        chunk_type="function",
+        name="test_transfer_over_daily_limit_should_be_rejected",
+        dependencies=["transfer", "DailyLimitExceeded"],
+        start_line=38,
+        end_line=45,
+        source_code=(
+            "def test_transfer_over_daily_limit_should_be_rejected():\n"
+            "    with pytest.raises(DailyLimitExceeded):\n"
+            "        service.transfer(account, 5000)\n"
+        ),
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=transfer_service_class, score=1.0),
+            SearchResult(chunk=create_account, score=1.0),
+            SearchResult(chunk=test_chunk, score=0.99),
+            SearchResult(chunk=account_history, score=0.95),
+            SearchResult(chunk=transfer, score=0.86),
+            SearchResult(chunk=limit_exception, score=0.80),
+            SearchResult(chunk=validate_daily_limit, score=0.78),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names[0] == "validate_daily_limit"
+    assert names.index("DailyLimitExceeded") < names.index("create_account")
+    assert names.index("validate_daily_limit") < names.index("create_account")
+    assert names.index("transfer") < names.index("list_account_history")
+    assert names.index("TransferService") > names.index("validate_daily_limit")
+    assert names.index("test_transfer_over_daily_limit_should_be_rejected") > 0
+    assert len({result.chunk.id for result in ranked}) == len(ranked)
+
+
+def test_normal_assertion_ranking_still_prefers_source_symbol_from_traceback() -> None:
+    failure = TestFailure(
+        test_name="tests/test_auth.py::test_expired_token_is_rejected",
+        file_path="tests/test_auth.py",
+        line_number=5,
+        error_type="AssertionError",
+        message="assert True is False",
+        traceback=(
+            "def test_expired_token_is_rejected():\n"
+            "    result = validate_token(expired_token)\n"
+            ">   assert result is False\n"
+            "E   assert True is False\n"
+        ),
+    )
+    source_chunk = _chunk(
+        id="validate_token",
+        file_path="auth_service.py",
+        chunk_type="function",
+        name="validate_token",
+        dependencies=[],
+        start_line=1,
+        end_line=2,
+        source_code="def validate_token(token):\n    return True\n",
+    )
+    test_chunk = _chunk(
+        id="test_expired",
+        file_path="tests/test_auth.py",
+        chunk_type="function",
+        name="test_expired_token_is_rejected",
+        dependencies=["validate_token"],
+        start_line=1,
+        end_line=5,
+        source_code=(
+            "def test_expired_token_is_rejected():\n"
+            "    result = validate_token(expired_token)\n"
+            "    assert result is False\n"
+        ),
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=test_chunk, score=1.0),
+            SearchResult(chunk=source_chunk, score=0.7),
+        ],
+    )
+
+    assert [result.chunk.name for result in ranked] == [
+        "validate_token",
+        "test_expired_token_is_rejected",
+    ]
 
 
 def test_diagnose_prints_tests_passed_when_no_failures(
@@ -526,13 +842,14 @@ def _chunk(
     start_line: int,
     end_line: int,
     source_code: str,
+    parent: str | None = None,
 ) -> CodeChunk:
     return CodeChunk(
         id=id,
         file_path=file_path,
         chunk_type=chunk_type,  # type: ignore[arg-type]
         name=name,
-        parent=None,
+        parent=parent,
         start_line=start_line,
         end_line=end_line,
         source_code=source_code,

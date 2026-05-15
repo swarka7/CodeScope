@@ -140,7 +140,10 @@ def test_diagnose_auth_service_output_contract(
     assert "Tests failed" in captured.out
     assert "Diagnosis summary:" in captured.out
     assert "Most relevant source chunk:" in captured.out
+    assert "Possible issue:" in captured.out
     assert "Likely relevant code:" in captured.out
+    assert "reasons=" in captured.out
+    assert "validation helper name" in captured.out
     assert "validate_token" in captured.out
 
 

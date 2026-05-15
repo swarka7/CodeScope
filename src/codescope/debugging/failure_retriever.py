@@ -3,6 +3,22 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from codescope.debugging.call_graph_context import expand_failure_call_path_context
+from codescope.debugging.failure_signals import (
+    VALIDATION_WORDS,
+    FailureSignals,
+    calls_relevant_validation_helper,
+    calls_validation_helper,
+    chunk_signal_text,
+    chunk_signal_tokens,
+    contains_expected_exception,
+    contains_raise_statement,
+    defines_expected_exception,
+    extract_failure_signals,
+    has_validation_name,
+    raises_expected_exception,
+    relevant_exception_symbol_matches,
+)
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_compatibility import check_index_compatibility
@@ -37,6 +53,29 @@ class FailureRetriever:
     _TRACEBACK_SYMBOL_BOOST = 0.35
     _SAME_FILE_HINT_BOOST = 0.25
     _SAME_DIR_HINT_BOOST = 0.15
+    _EXPECTED_EXCEPTION_BOOST = 1.50
+    _EXPECTED_EXCEPTION_DEFINITION_BOOST = 3.00
+    _RAISE_EXPECTED_EXCEPTION_BOOST = 2.50
+    _EXPECTED_EXCEPTION_VALIDATION_TEXT_BOOST = 1.00
+    _EXCEPTION_SYMBOL_BOOST = 0.20
+    _MAX_EXCEPTION_SYMBOL_BOOST = 0.80
+    _BEHAVIORAL_WORD_BOOST = 0.12
+    _MAX_BEHAVIORAL_WORD_BOOST = 0.48
+    _OPERATION_WORD_BOOST = 0.10
+    _MAX_OPERATION_WORD_BOOST = 0.40
+    _DOMAIN_WORD_BOOST = 0.05
+    _MAX_DOMAIN_WORD_BOOST = 0.25
+    _DID_NOT_RAISE_GUARD_NAME_BOOST = 0.90
+    _DID_NOT_RAISE_RAISE_BOOST = 0.50
+    _DID_NOT_RAISE_VALIDATION_CALL_BOOST = 0.80
+    _DID_NOT_RAISE_GENERIC_VALIDATION_CALL_BOOST = 0.15
+    _DID_NOT_RAISE_VALIDATION_TEXT_BOOST = 0.25
+    _DID_NOT_RAISE_GENERIC_VALIDATION_TEXT_BOOST = 0.10
+    _DID_NOT_RAISE_GENERIC_GUARD_NAME_BOOST = 0.20
+    _DID_NOT_RAISE_GENERIC_RAISE_BOOST = 0.10
+    _DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST = 0.20
+    _DID_NOT_RAISE_GENERIC_SIGNAL_CAP = 0.15
+    _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE = 0.35
 
     def __init__(
         self,
@@ -253,7 +292,13 @@ class FailureRetriever:
         return symbols
 
     @staticmethod
-    def score_failure_chunk(*, chunk: CodeChunk, base_score: float, failure: TestFailure) -> float:
+    def score_failure_chunk(
+        *,
+        chunk: CodeChunk,
+        base_score: float,
+        failure: TestFailure,
+        signals: FailureSignals | None = None,
+    ) -> float:
         """Heuristic reranking score used during failure-aware retrieval.
 
         This is intentionally simple: it adjusts the semantic similarity score with
@@ -261,6 +306,7 @@ class FailureRetriever:
         likely implementation code over test code.
         """
         score = float(base_score)
+        failure_signals = signals or extract_failure_signals(failure)
 
         message_symbols = FailureRetriever._extract_message_symbols(failure.message)
         traceback_symbols, source_hints = FailureRetriever._extract_traceback_hints(
@@ -302,21 +348,135 @@ class FailureRetriever:
                 score += FailureRetriever._SAME_DIR_HINT_BOOST
                 break
 
+        signal_score = FailureRetriever._score_structured_failure_signals(
+            chunk=chunk, signals=failure_signals
+        )
+        if is_test_path(chunk.file_path):
+            signal_score *= 0.25
+        score += signal_score
+
+        return score
+
+    @staticmethod
+    def _score_structured_failure_signals(*, chunk: CodeChunk, signals: FailureSignals) -> float:
+        text = chunk_signal_text(chunk)
+        text_lower = text.lower()
+        source_lower = chunk.source_code.lower()
+        tokens = chunk_signal_tokens(chunk)
+        score = 0.0
+
+        defines_exception = defines_expected_exception(chunk, signals)
+        expected_exception_in_text = contains_expected_exception(text_lower, signals)
+        expected_exception_in_source = contains_expected_exception(source_lower, signals)
+        raises_exception = raises_expected_exception(chunk.source_code, signals)
+        has_guard_name = has_validation_name(chunk.name)
+        calls_guard = calls_validation_helper(chunk)
+        calls_relevant_guard = calls_relevant_validation_helper(chunk, signals)
+        has_validation_text = bool(tokens & VALIDATION_WORDS)
+        relevant_exception_matches = relevant_exception_symbol_matches(tokens, signals)
+
+        if expected_exception_in_text:
+            score += FailureRetriever._EXPECTED_EXCEPTION_BOOST
+
+        if defines_exception:
+            score += FailureRetriever._EXPECTED_EXCEPTION_DEFINITION_BOOST
+
+        exception_matches = set(signals.exception_symbols) & tokens
+        weak_signal_score = min(
+            FailureRetriever._MAX_EXCEPTION_SYMBOL_BOOST,
+            len(exception_matches) * FailureRetriever._EXCEPTION_SYMBOL_BOOST,
+        )
+
+        behavioral_matches = set(signals.behavioral_words) & tokens
+        weak_signal_score += min(
+            FailureRetriever._MAX_BEHAVIORAL_WORD_BOOST,
+            len(behavioral_matches) * FailureRetriever._BEHAVIORAL_WORD_BOOST,
+        )
+
+        operation_matches = set(signals.operation_words) & tokens
+        weak_signal_score += min(
+            FailureRetriever._MAX_OPERATION_WORD_BOOST,
+            len(operation_matches) * FailureRetriever._OPERATION_WORD_BOOST,
+        )
+
+        domain_matches = set(signals.domain_words) & tokens
+        weak_signal_score += min(
+            FailureRetriever._MAX_DOMAIN_WORD_BOOST,
+            len(domain_matches) * FailureRetriever._DOMAIN_WORD_BOOST,
+        )
+
+        if not signals.did_not_raise:
+            score += weak_signal_score
+            return score
+
+        if raises_exception:
+            score += FailureRetriever._RAISE_EXPECTED_EXCEPTION_BOOST
+        elif contains_raise_statement(source_lower) and relevant_exception_matches:
+            score += FailureRetriever._DID_NOT_RAISE_RAISE_BOOST
+        elif contains_raise_statement(source_lower):
+            score += FailureRetriever._DID_NOT_RAISE_GENERIC_RAISE_BOOST
+
+        if expected_exception_in_source and has_validation_text:
+            score += FailureRetriever._EXPECTED_EXCEPTION_VALIDATION_TEXT_BOOST
+
+        if has_guard_name and (expected_exception_in_source or relevant_exception_matches):
+            score += FailureRetriever._DID_NOT_RAISE_GUARD_NAME_BOOST
+        elif has_guard_name:
+            score += FailureRetriever._DID_NOT_RAISE_GENERIC_GUARD_NAME_BOOST
+
+        if calls_relevant_guard:
+            score += FailureRetriever._DID_NOT_RAISE_VALIDATION_CALL_BOOST
+        elif calls_guard:
+            score += FailureRetriever._DID_NOT_RAISE_GENERIC_VALIDATION_CALL_BOOST
+
+        if has_validation_text and (expected_exception_in_source or relevant_exception_matches):
+            score += FailureRetriever._DID_NOT_RAISE_VALIDATION_TEXT_BOOST
+        elif has_validation_text:
+            score += FailureRetriever._DID_NOT_RAISE_GENERIC_VALIDATION_TEXT_BOOST
+
+        has_strong_validation_signal = (
+            defines_exception
+            or raises_exception
+            or expected_exception_in_source
+            or (has_guard_name and bool(relevant_exception_matches))
+            or calls_relevant_guard
+        )
+        if not has_strong_validation_signal:
+            weak_signal_score = min(
+                weak_signal_score,
+                FailureRetriever._DID_NOT_RAISE_GENERIC_SIGNAL_CAP,
+            )
+
+        score += weak_signal_score
+
+        if has_strong_validation_signal and chunk.chunk_type in {"function", "method"}:
+            score += FailureRetriever._DID_NOT_RAISE_SPECIFIC_CHUNK_BOOST
+
+        if chunk.chunk_type == "class" and not defines_exception:
+            score *= FailureRetriever._DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE
+
         return score
 
     @staticmethod
     def rerank_semantic_results_for_failure(
         *, failure: TestFailure, semantic_results: list[SearchResult]
     ) -> list[SearchResult]:
-        scored: list[tuple[float, str, SearchResult]] = []
+        signals = extract_failure_signals(failure)
+        scored: list[tuple[float, SearchResult]] = []
         for result in semantic_results:
             adjusted = FailureRetriever.score_failure_chunk(
-                chunk=result.chunk, base_score=result.score, failure=failure
+                chunk=result.chunk,
+                base_score=result.score,
+                failure=failure,
+                signals=signals,
             )
-            scored.append((adjusted, result.chunk.id, result))
+            scored.append((adjusted, result))
 
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        return [SearchResult(chunk=item[2].chunk, score=item[0]) for item in scored]
+        scored.sort(key=lambda item: _failure_result_sort_key(item[0], item[1]))
+        return [
+            SearchResult(chunk=item[1].chunk, score=item[0], reasons=item[1].reasons)
+            for item in scored
+        ]
 
     def retrieve(self, failure: TestFailure, *, top_k: int = 5) -> list[RetrievalResult]:
         compatibility = check_index_compatibility(
@@ -333,12 +493,75 @@ class FailureRetriever:
 
         store = MemoryStore()
         store.add(chunks, embeddings)
-        candidate_k = max(top_k, top_k * 4)
+        candidate_k = max(top_k, top_k * 8, 40)
         semantic_candidates = store.search(query_embedding, top_k=candidate_k)
         semantic_ranked = self.rerank_semantic_results_for_failure(
             failure=failure, semantic_results=semantic_candidates
         )
-        semantic = semantic_ranked[:top_k]
-
         graph = DependencyGraph(chunks)
+
+        call_path_context = expand_failure_call_path_context(
+            failure=failure,
+            seed_results=semantic_ranked,
+            graph=graph,
+        )
+        if call_path_context:
+            semantic_ranked = _merge_search_results(semantic_ranked, call_path_context)
+
+        semantic = semantic_ranked[:top_k]
         return enrich_with_related(query=query, semantic_results=semantic, graph=graph)
+
+
+def _failure_result_sort_key(
+    score: float, result: SearchResult
+) -> tuple[float, bool, str, int, str]:
+    chunk = result.chunk
+    return (
+        -score,
+        is_test_path(chunk.file_path),
+        normalize_path(chunk.file_path),
+        chunk.start_line,
+        chunk.id,
+    )
+
+
+def _merge_search_results(
+    semantic_results: list[SearchResult], call_path_results: list[SearchResult]
+) -> list[SearchResult]:
+    best_by_id: dict[str, SearchResult] = {result.chunk.id: result for result in semantic_results}
+
+    for candidate in call_path_results:
+        existing = best_by_id.get(candidate.chunk.id)
+        if existing is None:
+            best_by_id[candidate.chunk.id] = candidate
+            continue
+
+        reasons = _merge_reasons(existing.reasons, candidate.reasons)
+        if candidate.score > existing.score:
+            best_by_id[candidate.chunk.id] = SearchResult(
+                chunk=candidate.chunk,
+                score=candidate.score,
+                reasons=reasons,
+            )
+        elif reasons != existing.reasons:
+            best_by_id[candidate.chunk.id] = SearchResult(
+                chunk=existing.chunk,
+                score=existing.score,
+                reasons=reasons,
+            )
+
+    merged = list(best_by_id.values())
+    merged.sort(key=lambda result: _failure_result_sort_key(result.score, result))
+    return merged
+
+
+def _merge_reasons(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for reason in [*left, *right]:
+        key = reason.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(reason)
+    return tuple(merged)

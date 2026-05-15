@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +15,7 @@ class RetrievalResult:
     kind: Literal["semantic", "related"]
     chunk: CodeChunk
     score: float | None
+    reasons: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +43,12 @@ def enrich_with_related(
     per_hop_limit: int | None = 10,
 ) -> list[RetrievalResult]:
     enriched: list[RetrievalResult] = [
-        RetrievalResult(kind="semantic", chunk=result.chunk, score=result.score)
+        RetrievalResult(
+            kind="semantic",
+            chunk=result.chunk,
+            score=result.score,
+            reasons=result.reasons,
+        )
         for result in semantic_results
     ]
 

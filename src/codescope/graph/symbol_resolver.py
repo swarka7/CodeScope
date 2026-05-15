@@ -48,6 +48,15 @@ class SymbolResolver:
         dotted = _split_dotted(dep)
         if len(dotted) >= 2:
             head, tail = dotted[0], dotted[-1]
+            if head in {"self", "cls"} and source_chunk.parent:
+                resolved_self = self._resolve_self_method(
+                    parent=source_chunk.parent,
+                    tail=tail,
+                    source_file_key=file_key,
+                )
+                if resolved_self:
+                    return resolved_self
+
             resolved = self._resolve_dotted(
                 head=head, tail=tail, source_file_key=file_key, import_context=import_context
             )
@@ -110,6 +119,17 @@ class SymbolResolver:
             return [ResolvedSymbol(matched_name=name, chunk=unique_method)]
 
         return []
+
+    def _resolve_self_method(
+        self, *, parent: str, tail: str, source_file_key: str
+    ) -> list[ResolvedSymbol]:
+        qualified = f"{parent}.{tail}"
+        candidates = self._chunks_by_file.get(source_file_key, {}).get(qualified, [])
+        if not candidates:
+            return []
+        return _dedupe_and_sort(
+            [ResolvedSymbol(matched_name=qualified, chunk=chunk) for chunk in candidates]
+        )
 
     def _choose_module_files(self, module_stem: str, *, source_file_key: str) -> list[str]:
         candidates = sorted(self._files_by_module_stem.get(module_stem, set()))

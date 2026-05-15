@@ -7,11 +7,14 @@ from pathlib import Path
 
 from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
+from codescope.debugging.issue_hypothesis import build_issue_hypothesis
+from codescope.debugging.retrieval_reasons import format_retrieval_reasons
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
+from codescope.models.test_failure import TestFailure
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
@@ -265,15 +268,21 @@ def _handle_diagnose(repo_path: Path) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         print(build_diagnosis_summary(failure, results))
+        hypothesis = build_issue_hypothesis(failure, results)
+        if hypothesis:
+            print()
+            print(hypothesis)
         print()
         print("Likely relevant code:")
-        _print_retrieval_results(results, repo_path=repo_path)
+        _print_retrieval_results(results, repo_path=repo_path, failure=failure)
         print()
 
     return run_result.exit_code
 
 
-def _print_retrieval_results(results: list[RetrievalResult], *, repo_path: Path) -> None:
+def _print_retrieval_results(
+    results: list[RetrievalResult], *, repo_path: Path, failure: TestFailure | None = None
+) -> None:
     for result in results:
         chunk = result.chunk
         kind = result.kind
@@ -294,9 +303,17 @@ def _print_retrieval_results(results: list[RetrievalResult], *, repo_path: Path)
         type_tag = f"[{chunk.chunk_type}]"
 
         if kind == "semantic" and score is not None:
-            print(f"{kind_tag} {type_tag} {chunk_name} {location} score={score:.2f}")
+            line = f"{kind_tag} {type_tag} {chunk_name} {location} score={score:.2f}"
         else:
-            print(f"{kind_tag} {type_tag} {chunk_name} {location}")
+            line = f"{kind_tag} {type_tag} {chunk_name} {location}"
+
+        if failure is not None:
+            line = (
+                f"{line} reasons="
+                f"{format_retrieval_reasons(failure, chunk, extra_reasons=result.reasons)}"
+            )
+
+        print(line)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
