@@ -88,8 +88,8 @@ Likely relevant code:
    Source: semantic
    Score: ...
    reasons=
-     - validation helper name
-     - behavioral keyword overlap: expired, rejected
+     - validation logic
+     - keyword match: expired, rejected
 
 Related context:
 1. decode_token
@@ -97,7 +97,7 @@ Related context:
    Location: token_manager.py:...
    Source: related
    reasons=
-     - semantic similarity
+     - semantic match
 ```
 
 Scores can vary slightly depending on embedding behavior, but the important contract is:

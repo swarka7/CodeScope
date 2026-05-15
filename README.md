@@ -184,9 +184,9 @@ Likely relevant code:
    Source: semantic
    Score: 1.42
    reasons=
-     - validation helper name
-     - source chunk from traceback file
-     - behavioral keyword overlap: expired, rejected
+     - validation logic
+     - traceback file match
+     - keyword match: expired, rejected
 
 Related context:
 1. decode_token
@@ -194,7 +194,7 @@ Related context:
    Location: token_manager.py:8-15
    Source: related
    reasons=
-     - semantic similarity
+     - semantic match
 ```
 
 The exact scores and ordering may change as the retrieval heuristics improve, but the output contract is intentionally explainable and deterministic.

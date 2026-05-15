@@ -34,13 +34,13 @@ Diagnosis summary + retrieval reasons
 Each diagnose result can include deterministic reasons such as:
 
 - `defines expected exception`
-- `contains expected exception`
+- `references expected exception`
 - `raises expected exception`
-- `validation helper name`
-- `calls validation helper`
-- `source chunk from traceback file`
-- `behavioral keyword overlap: ...`
-- `operation keyword overlap: ...`
+- `validation logic`
+- `calls validation logic`
+- `traceback file match`
+- `keyword match: ...`
+- `operation match: ...`
 
 These reasons are rule-based and are meant to make the ranking auditable. They are not LLM-generated explanations.
 
@@ -77,9 +77,9 @@ Likely relevant code:
    Source: semantic
    Score: 1.42
    reasons=
-     - validation helper name
-     - source chunk from traceback file
-     - behavioral keyword overlap: expired, rejected
+     - validation logic
+     - traceback file match
+     - keyword match: expired, rejected
 
 Related context:
 1. decode_token
@@ -87,7 +87,7 @@ Related context:
    Location: token_manager.py:8-15
    Source: related
    reasons=
-     - semantic similarity
+     - semantic match
 ```
 
 ## Design constraints

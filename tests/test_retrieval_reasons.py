@@ -20,8 +20,8 @@ def test_reasons_explain_expected_exception_validator() -> None:
     )
 
     assert "raises expected exception" in reasons
-    assert "validation helper name" in reasons
-    assert any(reason.startswith("behavioral keyword overlap") for reason in reasons)
+    assert "validation logic" in reasons
+    assert any(reason.startswith("keyword match") for reason in reasons)
 
 
 def test_reasons_explain_expected_exception_class() -> None:
@@ -35,7 +35,7 @@ def test_reasons_explain_expected_exception_class() -> None:
     )
 
     assert "defines expected exception" in reasons
-    assert "contains expected exception" in reasons
+    assert "references expected exception" in reasons
 
 
 def test_reasons_explain_validation_caller_and_operation_overlap() -> None:
@@ -62,8 +62,8 @@ def test_reasons_explain_validation_caller_and_operation_overlap() -> None:
         ),
     )
 
-    assert "calls validation helper" in reasons
-    assert any(reason.startswith("operation keyword overlap") for reason in reasons)
+    assert "calls validation logic" in reasons
+    assert any(reason.startswith("operation match") for reason in reasons)
 
 
 def test_reasons_explain_source_traceback_file() -> None:
@@ -81,8 +81,8 @@ def test_reasons_explain_source_traceback_file() -> None:
         _chunk(name="validate_token", file_path="src/auth/service.py"),
     )
 
-    assert "source chunk from traceback file" in reasons
-    assert "validation helper name" in reasons
+    assert "traceback file match" in reasons
+    assert "validation logic" in reasons
 
 
 def test_reasons_keep_source_logic_before_test_context() -> None:
@@ -100,9 +100,9 @@ def test_reasons_keep_source_logic_before_test_context() -> None:
         limit=6,
     )
 
-    assert "contains expected exception" in reasons
+    assert "references expected exception" in reasons
     assert "test context" in reasons
-    assert reasons.index("contains expected exception") < reasons.index("test context")
+    assert reasons.index("references expected exception") < reasons.index("test context")
 
 
 def test_reasons_preserve_call_path_context() -> None:
@@ -118,8 +118,32 @@ def test_reasons_preserve_call_path_context() -> None:
         extra_reasons=("called by top source chunk", "validation helper on call path"),
     )
 
-    assert reasons[:2] == ["called by top source chunk", "validation helper on call path"]
+    assert reasons[:2] == ["call path match", "validation logic"]
     assert "raises expected exception" in reasons
+
+
+def test_reasons_normalize_reverse_call_path_context() -> None:
+    reasons = build_retrieval_reasons(
+        _did_not_raise_failure(),
+        _chunk(
+            name="update_status",
+            source_code=(
+                "def update_status(task, requested):\n"
+                "    validate_status_transition(task.status, requested)\n"
+            ),
+            dependencies=["validate_status_transition"],
+        ),
+        extra_reasons=(
+            "reverse call-path context",
+            "caller of validation helper",
+            "caller of expected-exception logic",
+        ),
+        limit=6,
+    )
+
+    assert "reverse call path match" in reasons
+    assert "calls validation logic" in reasons
+    assert "exception-related call path" in reasons
 
 
 def test_reasons_include_generic_data_access_signal_when_present() -> None:
@@ -134,7 +158,7 @@ def test_reasons_include_generic_data_access_signal_when_present() -> None:
         limit=6,
     )
 
-    assert "generic data-access signal" in reasons
+    assert "data-access context" in reasons
 
 
 def test_reasons_fall_back_to_semantic_similarity() -> None:
@@ -143,7 +167,7 @@ def test_reasons_fall_back_to_semantic_similarity() -> None:
         _chunk(name="render_dashboard", source_code="def render_dashboard():\n    return None\n"),
     )
 
-    assert reasons == ["semantic similarity"]
+    assert reasons == ["semantic match"]
 
 
 def _did_not_raise_failure() -> TestFailure:

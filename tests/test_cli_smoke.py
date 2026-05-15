@@ -154,7 +154,7 @@ def test_diagnose_auth_service_output_contract(
     assert "Source: semantic" in captured.out
     assert "Score:" in captured.out
     assert "reasons=" in captured.out
-    assert "validation helper name" in captured.out
+    assert "validation logic" in captured.out
     assert "validate_token" in captured.out
 
 

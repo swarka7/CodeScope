@@ -35,10 +35,10 @@ def build_retrieval_reasons(
     if _is_source_traceback_file(failure, chunk):
         reasons.append("source chunk from traceback file")
 
-    deduped = _dedupe(reasons)
+    deduped = _dedupe([_public_reason(reason) for reason in reasons])
     if deduped:
         return deduped[:limit]
-    return ["semantic similarity"]
+    return ["semantic match"]
 
 
 def format_retrieval_reasons(
@@ -56,35 +56,76 @@ def _reasons_from_score_breakdown(breakdown: ScoreBreakdown) -> list[str]:
     if breakdown.by_name("raises_expected_exception"):
         reasons.append("raises expected exception")
     elif breakdown.by_name("contains_expected_exception"):
-        reasons.append("contains expected exception")
+        reasons.append("references expected exception")
 
     if breakdown.by_name("validation_helper_name"):
-        reasons.append("validation helper name")
+        reasons.append("validation logic")
 
     if breakdown.by_name("calls_validation_helper"):
-        reasons.append("calls validation helper")
+        reasons.append("calls validation logic")
 
     if breakdown.by_name("same_file_source_hint"):
-        reasons.append("source chunk from traceback file")
+        reasons.append("traceback file match")
 
     for component_name, label in (
-        ("behavioral_keyword_overlap", "behavioral keyword overlap"),
-        ("operation_keyword_overlap", "operation keyword overlap"),
+        ("behavioral_keyword_overlap", "keyword match"),
+        ("operation_keyword_overlap", "operation match"),
     ):
         values = _component_details(breakdown, component_name)
         if values:
             reasons.append(f"{label}: {', '.join(values)}")
 
     if breakdown.by_name("validation_raise_logic"):
-        reasons.append("validation raise logic")
+        reasons.append("validation logic")
 
     if breakdown.by_name("test_chunk_penalty"):
         reasons.append("test context")
 
     if breakdown.by_name("generic_crud_or_data_access_penalty"):
-        reasons.append("generic data-access signal")
+        reasons.append("data-access context")
 
     return reasons
+
+
+def _public_reason(reason: str) -> str:
+    normalized = " ".join(reason.strip().split())
+    if not normalized:
+        return ""
+
+    exact_mappings = {
+        "called by top source chunk": "call path match",
+        "called by traceback source": "call path match",
+        "reverse call-path context": "reverse call path match",
+        "caller of validation helper": "calls validation logic",
+        "caller of expected-exception logic": "exception-related call path",
+        "exception logic on call path": "exception-related call path",
+        "validation helper on call path": "validation logic",
+        "validation helper name": "validation logic",
+        "calls validation helper": "calls validation logic",
+        "contains expected exception": "references expected exception",
+        "source chunk from traceback file": "traceback file match",
+        "generic data-access signal": "data-access context",
+        "semantic similarity": "semantic match",
+        "validation raise logic": "validation logic",
+        "business caller context": "call path match",
+    }
+    mapped = exact_mappings.get(normalized)
+    if mapped:
+        return mapped
+
+    prefix_mappings = (
+        ("behavioral keyword overlap:", "keyword match:"),
+        ("operation keyword overlap:", "operation match:"),
+        ("called via ", "call path match"),
+    )
+    for prefix, replacement in prefix_mappings:
+        if normalized.startswith(prefix):
+            suffix = normalized.removeprefix(prefix).strip()
+            if suffix and replacement.endswith(":"):
+                return f"{replacement} {suffix}"
+            return replacement
+
+    return normalized
 
 
 def _component_details(
