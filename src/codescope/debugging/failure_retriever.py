@@ -10,6 +10,7 @@ from codescope.indexing.index_versions import is_current_index_metadata
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
+from codescope.utils.path_utils import is_test_path, normalize_path
 from codescope.vectorstore.memory_store import MemoryStore, SearchResult
 
 
@@ -238,35 +239,11 @@ class FailureRetriever:
         return (symbols, source_hints)
 
     @staticmethod
-    def _normalize_path(path: str) -> str:
-        normalized = path.replace("\\", "/").strip()
-        while normalized.startswith("./"):
-            normalized = normalized.removeprefix("./")
-        return normalized.strip("/").lower()
-
-    @staticmethod
-    def _is_test_chunk(chunk: CodeChunk) -> bool:
-        path = FailureRetriever._normalize_path(chunk.file_path)
-        path_wrapped = f"/{path}/"
-        if "/tests/" in path_wrapped:
-            return True
-
-        file_name = path.rsplit("/", 1)[-1]
-        if file_name in {"conftest.py"}:
-            return True
-        if file_name.startswith("test_"):
-            return True
-        if file_name.endswith("_test.py"):
-            return True
-
-        return False
-
-    @staticmethod
     def _hint_to_normalized_path(hint: str) -> str:
         match = FailureRetriever._HINT_PATH_RE.match(hint.strip())
         if match is None:
             return ""
-        return FailureRetriever._normalize_path(match.group("path"))
+        return normalize_path(match.group("path"))
 
     @staticmethod
     def _extract_message_symbols(message: str) -> set[str]:
@@ -274,23 +251,6 @@ class FailureRetriever:
         for match in FailureRetriever._CALL_SYMBOL_RE.finditer(message):
             symbols.add(match.group("name"))
         return symbols
-
-    @staticmethod
-    def _is_test_path(path: str) -> bool:
-        normalized = FailureRetriever._normalize_path(path)
-        wrapped = f"/{normalized}/"
-        if "/tests/" in wrapped:
-            return True
-
-        file_name = normalized.rsplit("/", 1)[-1]
-        if file_name in {"conftest.py"}:
-            return True
-        if file_name.startswith("test_"):
-            return True
-        if file_name.endswith("_test.py"):
-            return True
-
-        return False
 
     @staticmethod
     def score_failure_chunk(*, chunk: CodeChunk, base_score: float, failure: TestFailure) -> float:
@@ -310,7 +270,7 @@ class FailureRetriever:
         )
         traceback_symbol_set = {symbol for symbol in traceback_symbols}
 
-        if FailureRetriever._is_test_chunk(chunk):
+        if is_test_path(chunk.file_path):
             score -= FailureRetriever._TEST_CHUNK_PENALTY
         else:
             score += FailureRetriever._NON_TEST_CHUNK_BOOST
@@ -321,13 +281,11 @@ class FailureRetriever:
         if chunk.name in traceback_symbol_set:
             score += FailureRetriever._TRACEBACK_SYMBOL_BOOST
 
-        normalized_chunk_path = FailureRetriever._normalize_path(chunk.file_path)
+        normalized_chunk_path = normalize_path(chunk.file_path)
         hint_files = [FailureRetriever._hint_to_normalized_path(hint) for hint in source_hints]
         hint_files = [hint for hint in hint_files if hint]
 
-        non_test_hint_files = [
-            hint for hint in hint_files if not FailureRetriever._is_test_path(hint)
-        ]
+        non_test_hint_files = [hint for hint in hint_files if not is_test_path(hint)]
         hint_dirs = {hint.rsplit("/", 1)[0] for hint in non_test_hint_files if "/" in hint}
 
         for hint_file in non_test_hint_files:

@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from codescope.models.test_failure import TestFailure
+from codescope.utils.path_utils import normalize_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,13 +109,13 @@ def _display_test_name(nodeid: str) -> str:
 
 
 def _find_location(lines: list[str], *, file_path: str) -> _LocationInfo | None:
-    normalized_target = _normalize_path(file_path)
+    normalized_target = normalize_path(file_path)
     for idx, line in enumerate(lines):
         parsed = _parse_location_line(line)
         if parsed is None:
             continue
 
-        normalized_candidate = _normalize_path(parsed.file_path)
+        normalized_candidate = normalize_path(parsed.file_path)
         if normalized_candidate == normalized_target:
             return _LocationInfo(
                 line_index=idx,
@@ -163,13 +164,6 @@ def _parse_location_line(line: str) -> _ParsedLocationLine | None:
         line_number=int(line_part),
         error_type=error_type,
     )
-
-
-def _normalize_path(path: str) -> str:
-    normalized = path.replace("\\", "/").strip()
-    while normalized.startswith("./"):
-        normalized = normalized.removeprefix("./")
-    return normalized.strip("/").lower()
 
 
 def _extract_traceback(

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult
+from codescope.utils.path_utils import display_path, is_test_path
 
 
 def build_diagnosis_summary(failure: TestFailure, results: list[RetrievalResult]) -> str:
@@ -26,7 +26,7 @@ def build_diagnosis_summary(failure: TestFailure, results: list[RetrievalResult]
     else:
         lines.append(
             f"- Most relevant source chunk: {_chunk_display_name(source.chunk)} "
-            f"in {_display_path(source.chunk.file_path)}"
+            f"in {display_path(source.chunk.file_path)}"
         )
 
     if related_context:
@@ -60,7 +60,7 @@ def _failure_signal(failure: TestFailure) -> str:
 
 def _top_source_result(results: list[RetrievalResult]) -> RetrievalResult | None:
     for result in results:
-        if not _is_test_chunk(result.chunk):
+        if not is_test_path(result.chunk.file_path):
             return result
     return results[0] if results else None
 
@@ -119,22 +119,6 @@ def _chunk_display_name(chunk: CodeChunk) -> str:
     if chunk.parent:
         return f"{chunk.parent}.{chunk.name}"
     return chunk.name
-
-
-def _display_path(file_path: str) -> str:
-    return Path(file_path).as_posix()
-
-
-def _is_test_chunk(chunk: CodeChunk) -> bool:
-    path = chunk.file_path.replace("\\", "/").lower().strip("/")
-    wrapped = f"/{path}/"
-    if "/tests/" in wrapped:
-        return True
-
-    file_name = path.rsplit("/", 1)[-1]
-    return file_name == "conftest.py" or file_name.startswith("test_") or file_name.endswith(
-        "_test.py"
-    )
 
 
 def _truncate(value: str, *, limit: int = 140) -> str:

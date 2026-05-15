@@ -6,6 +6,7 @@ from typing import Literal
 
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.models.code_chunk import CodeChunk
+from codescope.utils.path_utils import is_test_path, normalize_path
 from codescope.vectorstore.memory_store import SearchResult
 
 
@@ -96,7 +97,7 @@ def score_related_chunk(
     if semantic_source.parent and related_chunk.parent == semantic_source.parent:
         score += 1
 
-    if _is_test_chunk(related_chunk) and (not _query_mentions_tests(query)):
+    if is_test_path(related_chunk.file_path) and (not _query_mentions_tests(query)):
         score -= 3
 
     if _is_infrastructure_chunk(related_chunk) and (not allow_infra_chunks):
@@ -204,7 +205,7 @@ def _expand_frontier(
                 continue
             if related.id in visited:
                 continue
-            if (not allow_test_chunks) and _is_test_chunk(related):
+            if (not allow_test_chunks) and is_test_path(related.file_path):
                 continue
 
             score = score_traversed_related_chunk(
@@ -265,23 +266,6 @@ def _module_dir(file_path: str) -> str:
         return path.rsplit("/", 1)[0] if "/" in path else ""
 
 
-def _is_test_chunk(chunk: CodeChunk) -> bool:
-    path = chunk.file_path.replace("\\", "/").lower().strip("/")
-    path_wrapped = f"/{path}/"
-    if "/tests/" in path_wrapped:
-        return True
-
-    file_name = path.rsplit("/", 1)[-1]
-    if file_name in {"conftest.py"}:
-        return True
-    if file_name.startswith("test_"):
-        return True
-    if file_name.endswith("_test.py"):
-        return True
-
-    return False
-
-
 def _query_mentions_tests(query: str) -> bool:
     keywords = {"test", "tests", "testing", "pytest"}
     tokens: list[str] = []
@@ -302,7 +286,7 @@ def _query_mentions_tests(query: str) -> bool:
 
 
 def _is_infrastructure_chunk(chunk: CodeChunk) -> bool:
-    path = chunk.file_path.replace("\\", "/").lower().strip("/")
+    path = normalize_path(chunk.file_path)
     path_wrapped = f"/{path}/"
     return (
         "/codescope/indexing/" in path_wrapped
