@@ -9,6 +9,7 @@ from codescope.cli import main as cli_main
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.embeddings.embedder import Embedder
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 
@@ -194,7 +195,7 @@ def test_failure_aware_retrieval_returns_relevant_chunks(tmp_path: Path) -> None
     IndexStore(repo_path).save(
         chunks=chunks,
         embeddings=embeddings,
-        metadata={"schema_version": 1, "chunks_indexed": len(chunks), "files_indexed": 2},
+        metadata=_index_metadata(chunks_indexed=len(chunks), files_indexed=2),
     )
 
     failure = TestFailure(
@@ -253,7 +254,7 @@ def test_failure_aware_ranking_prefers_source_when_symbol_only_in_traceback(tmp_
             [1.0, 0.0],  # semantic match favors tests first
             [0.7, 0.7],
         ],
-        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+        metadata=_index_metadata(chunks_indexed=2, files_indexed=2),
     )
 
     failure = TestFailure(
@@ -339,7 +340,7 @@ def test_diagnose_outputs_failure_summary_and_likely_relevant_code(
     IndexStore(repo_path).save(
         chunks=chunks,
         embeddings=embeddings,
-        metadata={"schema_version": 1, "chunks_indexed": len(chunks), "files_indexed": 2},
+        metadata=_index_metadata(chunks_indexed=len(chunks), files_indexed=2),
     )
 
     class _PatchedFailureRetriever(FailureRetriever):
@@ -419,7 +420,7 @@ def test_failure_aware_ranking_prefers_source_over_test_chunk(tmp_path: Path) ->
     IndexStore(repo_path).save(
         chunks=[test_chunk, source_chunk],
         embeddings=embeddings,
-        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+        metadata=_index_metadata(chunks_indexed=2, files_indexed=2),
     )
 
     failure = TestFailure(
@@ -474,7 +475,7 @@ def test_failure_aware_ranking_keeps_tests_when_strongly_relevant(tmp_path: Path
     IndexStore(repo_path).save(
         chunks=[test_chunk, source_chunk],
         embeddings=embeddings,
-        metadata={"schema_version": 1, "chunks_indexed": 2, "files_indexed": 2},
+        metadata=_index_metadata(chunks_indexed=2, files_indexed=2),
     )
 
     failure = TestFailure(
@@ -537,6 +538,17 @@ def _chunk(
         imports=[],
         dependencies=dependencies,
     )
+
+
+def _index_metadata(*, chunks_indexed: int, files_indexed: int) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "index_schema_version": INDEX_SCHEMA_VERSION,
+        "embedding_text_version": EMBEDDING_TEXT_VERSION,
+        "embedding_model_name": "all-MiniLM-L6-v2",
+        "chunks_indexed": chunks_indexed,
+        "files_indexed": files_indexed,
+    }
 
 
 def _write_pytest_project(

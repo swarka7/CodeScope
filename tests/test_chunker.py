@@ -65,3 +65,70 @@ def test_returns_empty_for_unparsable_files(tmp_path: Path) -> None:
 
     assert chunks == []
 
+
+def test_extracts_simple_decorators(tmp_path: Path) -> None:
+    source = "\n".join(
+        [
+            "from dataclasses import dataclass",
+            "",
+            "@dataclass",
+            "class User:",
+            "    name: str",
+            "",
+            "class Factory:",
+            "    @classmethod",
+            "    def build(cls) -> User:",
+            "        return User(name='Ada')",
+            "",
+            "    @staticmethod",
+            "    def ping() -> bool:",
+            "        return True",
+            "",
+        ]
+    )
+    file_path = tmp_path / "sample.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    parsed = AstParser().parse_file(file_path)
+    chunks = Chunker().extract_chunks(parsed)
+
+    user = next(c for c in chunks if c.chunk_type == "class" and c.name == "User")
+    build = next(c for c in chunks if c.chunk_type == "method" and c.name == "build")
+    ping = next(c for c in chunks if c.chunk_type == "method" and c.name == "ping")
+
+    assert user.decorators == ["@dataclass"]
+    assert build.decorators == ["@classmethod"]
+    assert ping.decorators == ["@staticmethod"]
+
+
+def test_extracts_fastapi_route_decorators(tmp_path: Path) -> None:
+    source = "\n".join(
+        [
+            "from fastapi import FastAPI",
+            "",
+            "app = FastAPI()",
+            "",
+            '@app.get("/")',
+            "def list_todos() -> list[str]:",
+            "    return []",
+            "",
+            '@app.post("/add")',
+            "def create_todo() -> dict[str, str]:",
+            "    return {'ok': 'true'}",
+            "",
+            '@router.delete(\"/{id}\")',
+            "def delete_todo(id: int) -> None:",
+            "    return None",
+            "",
+        ]
+    )
+    file_path = tmp_path / "routes.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    parsed = AstParser().parse_file(file_path)
+    chunks = Chunker().extract_chunks(parsed)
+
+    by_name = {chunk.name: chunk for chunk in chunks}
+    assert by_name["list_todos"].decorators == ['@app.get("/")']
+    assert by_name["create_todo"].decorators == ['@app.post("/add")']
+    assert by_name["delete_todo"].decorators == ['@router.delete("/{id}")']

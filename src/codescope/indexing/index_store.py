@@ -65,7 +65,7 @@ class IndexStore:
         if not isinstance(metadata, dict):
             raise ValueError("index_metadata.json must contain a JSON object")
 
-        chunks = [CodeChunk(**_expect_mapping(item)) for item in chunks_data]
+        chunks = [_chunk_from_mapping(_expect_mapping(item)) for item in chunks_data]
         embeddings: list[list[float]] = []
         for row in embeddings_data:
             if not isinstance(row, list):
@@ -76,6 +76,15 @@ class IndexStore:
             raise ValueError("chunks.json and embeddings.json length mismatch")
 
         return chunks, embeddings, metadata
+
+    def load_metadata(self) -> dict[str, Any]:
+        if not self.exists():
+            raise FileNotFoundError(f"No CodeScope index found at: {self._index_dir}")
+
+        metadata = self._read_json(self._index_dir / self.metadata_file_name)
+        if not isinstance(metadata, dict):
+            raise ValueError("index_metadata.json must contain a JSON object")
+        return metadata
 
     @staticmethod
     def _write_json(path: Path, data: Any) -> None:
@@ -92,3 +101,8 @@ def _expect_mapping(value: Any) -> dict[str, Any]:
         return value
     raise ValueError(f"Expected object entries, got: {type(value)!r}")
 
+
+def _chunk_from_mapping(value: dict[str, Any]) -> CodeChunk:
+    data = dict(value)
+    data.setdefault("decorators", [])
+    return CodeChunk(**data)

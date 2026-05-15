@@ -9,6 +9,7 @@ from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import is_current_index_metadata
 from codescope.indexing.indexer import Indexer
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
@@ -81,9 +82,11 @@ def _handle_index(repo_path: Path) -> int:
     except (FileNotFoundError, NotADirectoryError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    if summary.rebuilt_full_index:
+        print("Existing index is outdated; rebuilding full index.")
     print(f"Indexed {summary.indexed_files} new/changed files")
     print(f"Reused {summary.reused_files} unchanged files")
     print(f"Removed {summary.removed_files} deleted files")
@@ -138,6 +141,16 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
         return 2
 
     try:
+        metadata = index_store.load_metadata()
+        if not is_current_index_metadata(
+            metadata=metadata,
+            embedding_model_name=Embedder().model_name,
+        ):
+            print(
+                "Index is outdated. Run: python -m codescope.cli index <repo_path>",
+                file=sys.stderr,
+            )
+            return 2
         chunks, embeddings, _metadata = index_store.load()
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -241,7 +254,11 @@ def _handle_diagnose(repo_path: Path) -> int:
         print()
         print("Likely relevant code:")
 
-        results = retriever.retrieve(failure, top_k=5)
+        try:
+            results = retriever.retrieve(failure, top_k=5)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         _print_retrieval_results(results, repo_path=repo_path)
         print()
 

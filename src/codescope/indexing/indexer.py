@@ -8,6 +8,11 @@ from typing import Any
 
 from codescope.embeddings.embedder import Embedder
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import (
+    EMBEDDING_TEXT_VERSION,
+    INDEX_SCHEMA_VERSION,
+    is_current_index_metadata,
+)
 from codescope.models.code_chunk import CodeChunk
 from codescope.parser.ast_parser import AstParser
 from codescope.parser.chunker import Chunker
@@ -20,6 +25,7 @@ class IndexUpdateSummary:
     reused_files: int
     removed_files: int
     total_chunks: int
+    rebuilt_full_index: bool = False
 
 
 class Indexer:
@@ -51,10 +57,19 @@ class Indexer:
         previous_chunks: list[CodeChunk] = []
         previous_embeddings: list[list[float]] = []
         previous_metadata: dict[str, Any] = {}
+        rebuilt_full_index = False
 
         if self._store.exists():
-            previous_chunks, previous_embeddings, previous_metadata = self._store.load()
-            previous_file_meta = _metadata_files_by_path(previous_metadata)
+            previous_metadata = self._store.load_metadata()
+            if is_current_index_metadata(
+                metadata=previous_metadata,
+                embedding_model_name=self._embedder.model_name,
+            ):
+                previous_chunks, previous_embeddings, previous_metadata = self._store.load()
+                previous_file_meta = _metadata_files_by_path(previous_metadata)
+            else:
+                rebuilt_full_index = True
+                previous_metadata = {}
 
         deleted_paths = set(previous_file_meta) - set(file_stats_by_path)
 
@@ -150,6 +165,9 @@ class Indexer:
 
         metadata: dict[str, Any] = {
             "schema_version": 2,
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "embedding_text_version": EMBEDDING_TEXT_VERSION,
+            "embedding_model_name": self._embedder.model_name,
             "created_at": created_at or now,
             "updated_at": now,
             "files_indexed": len(files),
@@ -164,6 +182,7 @@ class Indexer:
             reused_files=len(unchanged_paths),
             removed_files=len(deleted_paths),
             total_chunks=len(combined_chunks),
+            rebuilt_full_index=rebuilt_full_index,
         )
 
 

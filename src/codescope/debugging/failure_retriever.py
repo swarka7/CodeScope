@@ -6,6 +6,7 @@ from pathlib import Path
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import is_current_index_metadata
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
@@ -360,6 +361,13 @@ class FailureRetriever:
         return [SearchResult(chunk=item[2].chunk, score=item[0]) for item in scored]
 
     def retrieve(self, failure: TestFailure, *, top_k: int = 5) -> list[RetrievalResult]:
+        metadata = self._index_store.load_metadata()
+        if not is_current_index_metadata(
+            metadata=metadata,
+            embedding_model_name=self._embedder.model_name,
+        ):
+            raise ValueError("Index is outdated. Run: python -m codescope.cli index <repo_path>")
+
         chunks, embeddings, _metadata = self._index_store.load()
 
         query = self.build_failure_query(failure)

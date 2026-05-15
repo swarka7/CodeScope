@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from codescope.cli import main as cli_main
 from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
 from codescope.models.code_chunk import CodeChunk
 
 
@@ -60,6 +62,44 @@ def test_index_store_saves_and_loads_index(tmp_path: Path) -> None:
     assert loaded_chunks[0].dependencies == ["helper", "repo.save"]
 
 
+def test_index_store_loads_old_chunks_without_decorators(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    store = IndexStore(repo_path)
+    store.index_dir.mkdir()
+    (store.index_dir / "chunks.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "old",
+                    "file_path": "app.py",
+                    "chunk_type": "function",
+                    "name": "route",
+                    "parent": None,
+                    "start_line": 1,
+                    "end_line": 2,
+                    "source_code": "def route():\n    return None\n",
+                    "imports": [],
+                    "dependencies": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (store.index_dir / "embeddings.json").write_text("[[1.0, 0.0]]\n", encoding="utf-8")
+    (store.index_dir / "index_metadata.json").write_text(
+        '{"schema_version": 1}\n',
+        encoding="utf-8",
+    )
+
+    chunks, embeddings, metadata = store.load()
+
+    assert chunks[0].decorators == []
+    assert embeddings == [[1.0, 0.0]]
+    assert metadata == {"schema_version": 1}
+
+
 def test_search_requires_existing_index(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
@@ -71,6 +111,72 @@ def test_search_requires_existing_index(tmp_path: Path, capsys: pytest.CaptureFi
     assert exit_code == 2
     assert captured.err.strip() == (
         "No CodeScope index found. Run: python -m codescope.cli index <repo_path>"
+    )
+
+
+def test_search_rejects_index_with_missing_versions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = IndexStore(repo_path)
+    store.save(
+        chunks=[
+            _chunk(
+                id="route",
+                file_path=(repo_path / "app.py").as_posix(),
+                chunk_type="function",
+                name="route",
+                dependencies=[],
+                imports=[],
+            )
+        ],
+        embeddings=[[1.0, 0.0]],
+        metadata={"schema_version": 1, "chunks_indexed": 1, "files_indexed": 1},
+    )
+
+    exit_code = cli_main(["search", str(repo_path), "route"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.err.strip() == (
+        "Index is outdated. Run: python -m codescope.cli index <repo_path>"
+    )
+
+
+def test_search_rejects_embedding_model_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    store = IndexStore(repo_path)
+    store.save(
+        chunks=[
+            _chunk(
+                id="route",
+                file_path=(repo_path / "app.py").as_posix(),
+                chunk_type="function",
+                name="route",
+                dependencies=[],
+                imports=[],
+            )
+        ],
+        embeddings=[[1.0, 0.0]],
+        metadata={
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "embedding_text_version": EMBEDDING_TEXT_VERSION,
+            "embedding_model_name": "different-model",
+            "chunks_indexed": 1,
+            "files_indexed": 1,
+        },
+    )
+
+    exit_code = cli_main(["search", str(repo_path), "route"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.err.strip() == (
+        "Index is outdated. Run: python -m codescope.cli index <repo_path>"
     )
 
 
@@ -95,4 +201,3 @@ def _chunk(
         imports=imports,
         dependencies=dependencies,
     )
-

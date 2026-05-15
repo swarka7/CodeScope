@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -18,3 +18,4 @@ class CodeChunk:
     source_code: str
     imports: list[str]
     dependencies: list[str]
+    decorators: list[str] = field(default_factory=list)

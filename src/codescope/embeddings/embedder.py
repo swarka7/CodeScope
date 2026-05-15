@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from codescope.models.code_chunk import CodeChunk
@@ -14,6 +15,10 @@ class Embedder:
         self._model_name = model_name
         self._model = model
 
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
     @staticmethod
     def build_embedding_text(chunk: CodeChunk) -> str:
         qualified_name = f"{chunk.parent}.{chunk.name}" if chunk.parent else chunk.name
@@ -26,6 +31,14 @@ class Embedder:
         if chunk.imports:
             header.append("imports:")
             header.extend(f"- {imp}" for imp in chunk.imports)
+
+        if chunk.decorators:
+            header.append("decorators:")
+            header.extend(f"- {decorator}" for decorator in chunk.decorators)
+            route_hints = _fastapi_route_hints(chunk.decorators)
+            if route_hints:
+                header.append("framework hints:")
+                header.extend(f"- {hint}" for hint in route_hints)
 
         header.append("source:")
         header.append(chunk.source_code.rstrip("\n"))
@@ -78,3 +91,20 @@ def _to_float_list(vector: Any) -> list[float]:
     if isinstance(vector, list | tuple):
         return [float(x) for x in vector]
     raise TypeError(f"Unsupported embedding type: {type(vector)!r}")
+
+
+def _fastapi_route_hints(decorators: list[str]) -> list[str]:
+    hints: list[str] = []
+    for decorator in decorators:
+        match = re.match(
+            r"^@\w+\.(get|post|put|patch|delete)\(\s*(['\"])([^'\"]*)\2",
+            decorator,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        method = match.group(1).upper()
+        route = match.group(3)
+        hints.append(f"FastAPI route handler: {method} {route}")
+        hints.append(f"{method} route endpoint")
+    return hints

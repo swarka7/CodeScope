@@ -16,6 +16,7 @@ def test_embedding_text_formatting() -> None:
         source_code="def do_thing():\n    return 1\n",
         imports=["import os", "from typing import Any"],
         dependencies=[],
+        decorators=['@app.post("/add")'],
     )
 
     text = Embedder.build_embedding_text(chunk)
@@ -26,6 +27,10 @@ def test_embedding_text_formatting() -> None:
     assert "imports:" in text
     assert "- import os" in text
     assert "- from typing import Any" in text
+    assert "decorators:" in text
+    assert '- @app.post("/add")' in text
+    assert "FastAPI route handler: POST /add" in text
+    assert "POST route endpoint" in text
     assert "source:" in text
     assert "def do_thing():" in text
 

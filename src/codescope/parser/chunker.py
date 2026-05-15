@@ -86,6 +86,7 @@ def _chunk_function(
     start_line, end_line = _node_span(node)
     source_code = _slice_source(source=source, start_line=start_line, end_line=end_line)
     dependencies = _extract_dependencies(node=node, known_defs=known_defs)
+    decorators = _extract_decorators(node=node, source=source)
     chunk_id = _make_chunk_id(
         file_path=file_path,
         chunk_type="function",
@@ -105,6 +106,7 @@ def _chunk_function(
         source_code=source_code,
         imports=list(imports),
         dependencies=dependencies,
+        decorators=decorators,
     )
 
 
@@ -113,6 +115,7 @@ def _chunk_class(
 ) -> CodeChunk:
     start_line, end_line = _node_span(node)
     source_code = _slice_source(source=source, start_line=start_line, end_line=end_line)
+    decorators = _extract_decorators(node=node, source=source)
     chunk_id = _make_chunk_id(
         file_path=file_path,
         chunk_type="class",
@@ -132,6 +135,7 @@ def _chunk_class(
         source_code=source_code,
         imports=list(imports),
         dependencies=[],
+        decorators=decorators,
     )
 
 
@@ -151,6 +155,7 @@ def _chunk_methods(
         start_line, end_line = _node_span(stmt)
         source_code = _slice_source(source=source, start_line=start_line, end_line=end_line)
         dependencies = _extract_dependencies(node=stmt, known_defs=known_defs)
+        decorators = _extract_decorators(node=stmt, source=source)
         chunk_id = _make_chunk_id(
             file_path=file_path,
             chunk_type="method",
@@ -171,9 +176,24 @@ def _chunk_methods(
                 source_code=source_code,
                 imports=list(imports),
                 dependencies=dependencies,
+                decorators=decorators,
             )
         )
     return chunks
+
+
+def _extract_decorators(
+    *, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, source: str
+) -> list[str]:
+    decorators: list[str] = []
+    for decorator in node.decorator_list:
+        text = ast.get_source_segment(source, decorator)
+        if text is None:
+            text = ast.unparse(decorator)
+        text = " ".join(text.strip().split())
+        if text:
+            decorators.append(f"@{text}")
+    return decorators
 
 
 def _extract_known_definitions(module: ast.Module) -> set[str]:
