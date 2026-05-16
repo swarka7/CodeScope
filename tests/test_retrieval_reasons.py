@@ -210,6 +210,35 @@ def test_reasons_include_business_state_update_and_filtering_logic() -> None:
     assert "filtering logic" in filter_reasons
 
 
+def test_reasons_include_paired_state_operation_context() -> None:
+    reasons = build_retrieval_reasons(
+        TestFailure(
+            test_name="tests/test_wallets.py::test_transfer_moves_value_between_wallets",
+            file_path="tests/test_wallets.py",
+            line_number=10,
+            error_type="AssertionError",
+            message="assert destination total changed after transfer",
+            traceback="",
+        ),
+        _chunk(
+            name="transfer_value",
+            file_path="wallets/service.py",
+            parent="WalletWorkflow",
+            source_code=(
+                "def transfer_value(self, source, destination, amount):\n"
+                "    source.withdraw(amount)\n"
+                "    self.repository.save_wallet(source)\n"
+                "    self.repository.save_wallet(destination)\n"
+            ),
+            dependencies=["withdraw", "save_wallet"],
+        ),
+        limit=8,
+    )
+
+    assert "paired state operation" in reasons
+    assert "possible missing counterpart operation" in reasons
+
+
 def test_reasons_fall_back_to_semantic_similarity() -> None:
     reasons = build_retrieval_reasons(
         _did_not_raise_failure(),

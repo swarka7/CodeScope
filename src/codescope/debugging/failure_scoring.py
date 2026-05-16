@@ -19,6 +19,12 @@ from codescope.debugging.failure_signals import (
     raises_expected_exception,
     relevant_exception_symbol_matches,
 )
+from codescope.debugging.paired_operations import (
+    called_paired_operation_terms,
+    chunk_defines_paired_operation,
+    has_paired_state_failure_context,
+    paired_operation_evidence,
+)
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.utils.path_utils import is_test_path, normalize_path
@@ -67,7 +73,10 @@ _DID_NOT_RAISE_NON_EXCEPTION_CLASS_SCALE = 0.35
 _BUSINESS_OPERATION_BOOST = 0.75
 _DID_NOT_RAISE_BUSINESS_OPERATION_BOOST = 0.45
 _STATE_UPDATE_LOGIC_BOOST = 0.55
+_PAIRED_STATE_OPERATION_BOOST = 0.55
+_POSSIBLE_MISSING_COUNTERPART_BOOST = 0.40
 _FILTERING_LOGIC_BOOST = 0.65
+_SINGLE_PAIRED_OPERATION_PENALTY = -0.45
 _GENERIC_DATA_ACCESS_PENALTY = -0.90
 _ROUTE_OR_CONTROLLER_PENALTY = -0.35
 _CONSTRUCTOR_OR_INIT_PENALTY = -0.35
@@ -890,6 +899,15 @@ def _business_behavior_components(
             )
         )
 
+    paired_components = _paired_state_operation_components(
+        chunk=chunk,
+        signals=signals,
+        primary_terms=primary_terms,
+        is_data_access=is_data_access,
+        is_constructor=is_constructor,
+    )
+    components.extend(paired_components)
+
     if has_filter_logic and (name_matches or source_matches) and not is_constructor:
         components.append(
             ScoreComponent(
@@ -922,6 +940,19 @@ def _business_behavior_components(
                 )
             )
 
+        if _is_single_paired_state_operation_chunk(
+            chunk=chunk,
+            signals=signals,
+            primary_terms=primary_terms,
+            source_lower=source_lower,
+        ):
+            components.append(
+                ScoreComponent(
+                    name="single_paired_operation_penalty",
+                    value=_SINGLE_PAIRED_OPERATION_PENALTY,
+                )
+            )
+
     return components
 
 
@@ -948,6 +979,71 @@ def _non_operation_penalty_components(
             ]
 
     return []
+
+
+def _paired_state_operation_components(
+    *,
+    chunk: CodeChunk,
+    signals: FailureSignals,
+    primary_terms: set[str],
+    is_data_access: bool,
+    is_constructor: bool,
+) -> list[ScoreComponent]:
+    if is_data_access or is_constructor:
+        return []
+
+    evidence = paired_operation_evidence(
+        chunk=chunk,
+        signals=signals,
+        primary_terms=primary_terms,
+    )
+    if not evidence.has_evidence:
+        return []
+
+    meaningful_terms = _meaningful_failure_terms(primary_terms, signals)
+    direct_pair_match = bool(
+        (set(evidence.called_terms) | set(evidence.counterpart_terms)) & meaningful_terms
+    )
+    primary_action_name_match = bool(
+        identifier_tokens(chunk.name)
+        & _primary_action_terms(primary_terms=primary_terms, signals=signals)
+    )
+
+    if not (direct_pair_match or primary_action_name_match):
+        return []
+
+    return [
+        ScoreComponent(
+            name="paired_state_operation",
+            value=_PAIRED_STATE_OPERATION_BOOST,
+            details=evidence.details,
+        ),
+        ScoreComponent(
+            name="possible_missing_counterpart_operation",
+            value=_POSSIBLE_MISSING_COUNTERPART_BOOST,
+            details=evidence.details,
+        ),
+    ]
+
+
+def _is_single_paired_state_operation_chunk(
+    *,
+    chunk: CodeChunk,
+    signals: FailureSignals,
+    primary_terms: set[str],
+    source_lower: str,
+) -> bool:
+    if signals.did_not_raise:
+        return False
+    if not has_paired_state_failure_context(signals=signals, primary_terms=primary_terms):
+        return False
+    if not chunk_defines_paired_operation(chunk):
+        return False
+    if called_paired_operation_terms(chunk):
+        return False
+    if _has_business_role(chunk):
+        return False
+    return _has_state_update_logic(chunk, source_lower=source_lower)
 
 
 def _meaningful_failure_terms(primary_terms: set[str], signals: FailureSignals) -> set[str]:

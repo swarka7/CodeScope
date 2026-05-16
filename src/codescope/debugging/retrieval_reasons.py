@@ -90,6 +90,12 @@ def _reasons_from_score_breakdown(breakdown: ScoreBreakdown) -> list[str]:
     if breakdown.by_name("state_update_logic"):
         reasons.append("state update logic")
 
+    if breakdown.by_name("paired_state_operation"):
+        reasons.append("paired state operation")
+
+    if breakdown.by_name("possible_missing_counterpart_operation"):
+        reasons.append("possible missing counterpart operation")
+
     if breakdown.by_name("filtering_logic"):
         reasons.append("filtering logic")
 
@@ -117,6 +123,8 @@ def _public_reason(reason: str) -> str:
         "semantic similarity": "semantic match",
         "validation raise logic": "validation logic",
         "business caller context": "call path match",
+        "paired state operation": "paired state operation",
+        "possible missing counterpart operation": "possible missing counterpart operation",
     }
     mapped = exact_mappings.get(normalized)
     if mapped:

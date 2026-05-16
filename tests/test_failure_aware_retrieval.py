@@ -501,6 +501,83 @@ def test_assertion_ranking_prefers_state_mutation_service_over_repository_lookup
     assert names.index("transfer_funds") < names.index("MissingAccountError")
 
 
+def test_assertion_ranking_prefers_business_method_over_called_single_side_mutator() -> None:
+    failure = TestFailure(
+        test_name="tests/test_wallets.py::test_transfer_moves_value_between_wallets",
+        file_path="tests/test_wallets.py",
+        line_number=42,
+        error_type="AssertionError",
+        message="assert destination total changed after transfer",
+        traceback="",
+    )
+    transfer = _chunk(
+        id="transfer",
+        file_path="wallets/service.py",
+        chunk_type="method",
+        parent="WalletWorkflow",
+        name="transfer_value",
+        dependencies=["withdraw", "save_wallet"],
+        start_line=20,
+        end_line=34,
+        source_code=(
+            "def transfer_value(self, source, destination, amount):\n"
+            "    source.withdraw(amount)\n"
+            "    self.repository.save_wallet(source)\n"
+            "    self.repository.save_wallet(destination)\n"
+            "    return destination.id\n"
+        ),
+    )
+    withdraw = _chunk(
+        id="withdraw",
+        file_path="wallets/models.py",
+        chunk_type="method",
+        parent="Wallet",
+        name="withdraw",
+        dependencies=[],
+        start_line=8,
+        end_line=9,
+        source_code="def withdraw(self, amount):\n    self.total -= amount\n",
+    )
+    deposit = _chunk(
+        id="deposit",
+        file_path="wallets/models.py",
+        chunk_type="method",
+        parent="Wallet",
+        name="deposit",
+        dependencies=[],
+        start_line=11,
+        end_line=12,
+        source_code="def deposit(self, amount):\n    self.total += amount\n",
+    )
+    repository_get = _chunk(
+        id="repo_get",
+        file_path="wallets/repository.py",
+        chunk_type="method",
+        parent="WalletRepository",
+        name="get_wallet",
+        dependencies=[],
+        start_line=5,
+        end_line=6,
+        source_code="def get_wallet(self, wallet_id):\n    return self.wallets[wallet_id]\n",
+    )
+
+    ranked = FailureRetriever.rerank_semantic_results_for_failure(
+        failure=failure,
+        semantic_results=[
+            SearchResult(chunk=withdraw, score=1.0),
+            SearchResult(chunk=repository_get, score=0.95),
+            SearchResult(chunk=deposit, score=0.92),
+            SearchResult(chunk=transfer, score=0.72),
+        ],
+    )
+    names = [result.chunk.name for result in ranked]
+
+    assert names[0] == "transfer_value"
+    assert names.index("transfer_value") < names.index("withdraw")
+    assert names.index("transfer_value") < names.index("get_wallet")
+    assert len({result.chunk.id for result in ranked}) == len(ranked)
+
+
 def test_assertion_ranking_prefers_filter_logic_over_route_and_repository_list() -> None:
     failure = TestFailure(
         test_name="tests/test_catalog.py::test_combined_filters_apply_genre_rating_and_year",

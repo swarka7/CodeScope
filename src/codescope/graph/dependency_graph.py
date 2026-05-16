@@ -43,6 +43,9 @@ class DependencyGraph:
 
         return related
 
+    def chunks(self) -> tuple[CodeChunk, ...]:
+        return self._chunks
+
     def related_candidates(self, chunk: CodeChunk) -> list[tuple[str, CodeChunk]]:
         """Return (dependency_name, candidate_chunk) pairs for a given chunk."""
 

@@ -155,6 +155,58 @@ def test_breakdown_records_business_state_update_logic() -> None:
     assert breakdown.by_name("state_update_logic")
 
 
+def test_breakdown_records_paired_state_operation_for_business_method() -> None:
+    breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="allocation_service",
+            file_path="warehouse/service.py",
+            chunk_type="method",
+            parent="AllocationService",
+            name="reserve_order",
+            dependencies=["reserve", "save_product"],
+            source_code=(
+                "def reserve_order(self, product, quantity):\n"
+                "    product.reserve(quantity)\n"
+                "    self.repository.save_product(product)\n"
+            ),
+        ),
+        base_score=0.8,
+        failure=_failure(
+            message="assert stock quantity changed after reserve order",
+            test_name="tests/test_inventory.py::test_reserve_order_updates_stock_totals",
+        ),
+    )
+
+    assert breakdown.by_name("paired_state_operation")
+    assert breakdown.by_name("possible_missing_counterpart_operation")
+
+
+def test_paired_state_failure_penalizes_single_side_operation_chunk() -> None:
+    breakdown = build_score_breakdown(
+        chunk=_chunk(
+            id="reserve",
+            file_path="warehouse/models.py",
+            chunk_type="method",
+            parent="Product",
+            name="reserve",
+            source_code=(
+                "def reserve(self, quantity):\n"
+                "    self.available -= quantity\n"
+                "    self.reserved += quantity\n"
+            ),
+        ),
+        base_score=1.0,
+        failure=_failure(
+            message="assert stock quantity changed after reserve order",
+            test_name="tests/test_inventory.py::test_reserve_order_updates_stock_totals",
+        ),
+    )
+
+    penalty = breakdown.by_name("single_paired_operation_penalty")
+    assert penalty
+    assert penalty[0].value < 0
+
+
 def test_breakdown_records_filtering_logic() -> None:
     breakdown = build_score_breakdown(
         chunk=_chunk(
@@ -218,6 +270,54 @@ def test_business_failure_penalizes_data_access_and_init_chunks() -> None:
     assert init_breakdown.final_score < 1.1
 
 
+def test_paired_state_ranking_prefers_business_method_over_called_operation() -> None:
+    failure = _failure(
+        message="assert destination total changed after payment transfer",
+        test_name="tests/test_payments.py::test_transfer_moves_value_between_wallets",
+    )
+    transfer = _chunk(
+        id="transfer",
+        file_path="payments/service.py",
+        chunk_type="method",
+        parent="PaymentWorkflow",
+        name="transfer_value",
+        dependencies=["withdraw", "save_wallet"],
+        source_code=(
+            "def transfer_value(self, source, destination, amount):\n"
+            "    source.withdraw(amount)\n"
+            "    self.repository.save_wallet(source)\n"
+            "    self.repository.save_wallet(destination)\n"
+        ),
+    )
+    withdraw = _chunk(
+        id="withdraw",
+        file_path="payments/models.py",
+        chunk_type="method",
+        parent="Wallet",
+        name="withdraw",
+        source_code="def withdraw(self, amount):\n    self.total -= amount\n",
+    )
+    repository_get = _chunk(
+        id="repo_get",
+        file_path="payments/repository.py",
+        chunk_type="method",
+        parent="WalletRepository",
+        name="get_wallet",
+        source_code="def get_wallet(self, wallet_id):\n    return self.wallets[wallet_id]\n",
+    )
+
+    transfer_score = score_failure_chunk(chunk=transfer, base_score=0.8, failure=failure)
+    withdraw_score = score_failure_chunk(chunk=withdraw, base_score=1.1, failure=failure)
+    repository_score = score_failure_chunk(
+        chunk=repository_get,
+        base_score=1.0,
+        failure=failure,
+    )
+
+    assert transfer_score > withdraw_score
+    assert transfer_score > repository_score
+
+
 def _did_not_raise(exception_name: str) -> TestFailure:
     return _failure(
         error_type="Failed",
@@ -249,6 +349,7 @@ def _chunk(
     name: str,
     source_code: str,
     parent: str | None = None,
+    dependencies: list[str] | None = None,
 ) -> CodeChunk:
     return CodeChunk(
         id=id,
@@ -260,7 +361,7 @@ def _chunk(
         end_line=3,
         source_code=source_code,
         imports=[],
-        dependencies=[],
+        dependencies=dependencies or [],
     )
 
 

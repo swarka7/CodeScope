@@ -754,6 +754,137 @@ def test_business_operation_caller_stays_near_validator() -> None:
     assert "get" not in names
 
 
+def test_call_path_surfaces_missing_paired_counterpart_operation() -> None:
+    service = _chunk(
+        id="service:reserve",
+        file_path="inventory/service.py",
+        chunk_type="method",
+        parent="ReservationWorkflow",
+        name="reserve_items",
+        dependencies=["reserve", "save_product"],
+        source_code=(
+            "def reserve_items(self, product, quantity):\n"
+            "    product.reserve(quantity)\n"
+            "    self.repository.save_product(product)\n"
+        ),
+    )
+    reserve = _chunk(
+        id="models:reserve",
+        file_path="inventory/models.py",
+        chunk_type="method",
+        parent="StockItem",
+        name="reserve",
+        source_code="def reserve(self, quantity):\n    self.available -= quantity\n",
+    )
+    release = _chunk(
+        id="models:release",
+        file_path="inventory/models.py",
+        chunk_type="method",
+        parent="StockItem",
+        name="release",
+        source_code="def release(self, quantity):\n    self.available += quantity\n",
+    )
+    save_product = _chunk(
+        id="repo:save",
+        file_path="inventory/repository.py",
+        chunk_type="method",
+        parent="InventoryRepository",
+        name="save_product",
+        source_code="def save_product(self, product):\n    self.products[product.sku] = product\n",
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_state_transfer_failure(),
+        seed_results=[SearchResult(chunk=service, score=3.0)],
+        graph=DependencyGraph([service, reserve, release, save_product]),
+    )
+    names = [result.chunk.name for result in results]
+
+    assert "release" in names
+    assert "reserve" in names
+    assert "save_product" not in names
+    release_result = _find(results, "release")
+    assert "paired state operation" in release_result.reasons
+    assert "possible missing counterpart operation" in release_result.reasons
+
+
+def test_call_path_surfaces_add_remove_style_counterpart_when_domain_related() -> None:
+    service = _chunk(
+        id="service:enroll",
+        file_path="memberships/service.py",
+        chunk_type="method",
+        parent="MembershipWorkflow",
+        name="move_membership",
+        dependencies=["add_member"],
+        source_code=(
+            "def move_membership(self, old_group, new_group, member):\n"
+            "    new_group.add_member(member)\n"
+        ),
+    )
+    add_member = _chunk(
+        id="models:add",
+        file_path="memberships/models.py",
+        chunk_type="method",
+        parent="Group",
+        name="add_member",
+        source_code="def add_member(self, member):\n    self.members.append(member)\n",
+    )
+    remove_member = _chunk(
+        id="models:remove",
+        file_path="memberships/models.py",
+        chunk_type="method",
+        parent="Group",
+        name="remove_member",
+        source_code="def remove_member(self, member):\n    self.members.remove(member)\n",
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_membership_failure(),
+        seed_results=[SearchResult(chunk=service, score=2.8)],
+        graph=DependencyGraph([service, add_member, remove_member]),
+    )
+
+    assert "remove_member" in [result.chunk.name for result in results]
+
+
+def test_paired_counterpart_lookup_avoids_unrelated_opposite_names() -> None:
+    service = _chunk(
+        id="service:move",
+        file_path="memberships/service.py",
+        chunk_type="method",
+        parent="MembershipWorkflow",
+        name="move_membership",
+        dependencies=["add_member"],
+        source_code=(
+            "def move_membership(self, old_group, new_group, member):\n"
+            "    new_group.add_member(member)\n"
+        ),
+    )
+    add_member = _chunk(
+        id="models:add",
+        file_path="memberships/models.py",
+        chunk_type="method",
+        parent="Group",
+        name="add_member",
+        source_code="def add_member(self, member):\n    self.members.append(member)\n",
+    )
+    unrelated_remove = _chunk(
+        id="audit:remove",
+        file_path="audit/logging.py",
+        chunk_type="function",
+        name="remove_member",
+        source_code="def remove_member(entry):\n    return entry\n",
+    )
+
+    results = expand_failure_call_path_context(
+        failure=_membership_failure(),
+        seed_results=[SearchResult(chunk=service, score=2.8)],
+        graph=DependencyGraph([service, add_member, unrelated_remove]),
+    )
+
+    assert "remove_member" not in [result.chunk.name for result in results]
+
+
 def _find(results: list[SearchResult], name: str) -> SearchResult:
     for result in results:
         if result.chunk.name == name:
@@ -790,6 +921,28 @@ def _daily_limit_failure() -> TestFailure:
         line_number=42,
         error_type="Failed",
         message="Failed: DID NOT RAISE <class 'banking.rules.DailyLimitExceeded'>",
+        traceback="",
+    )
+
+
+def _state_transfer_failure() -> TestFailure:
+    return TestFailure(
+        test_name="tests/test_inventory.py::test_reserve_items_moves_stock_between_buckets",
+        file_path="tests/test_inventory.py",
+        line_number=42,
+        error_type="AssertionError",
+        message="assert available and reserved stock totals changed after reserve",
+        traceback="",
+    )
+
+
+def _membership_failure() -> TestFailure:
+    return TestFailure(
+        test_name="tests/test_memberships.py::test_move_membership_updates_both_groups",
+        file_path="tests/test_memberships.py",
+        line_number=42,
+        error_type="AssertionError",
+        message="assert old and new group membership counts changed",
         traceback="",
     )
 

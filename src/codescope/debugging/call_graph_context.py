@@ -14,6 +14,14 @@ from codescope.debugging.failure_signals import (
     raises_expected_exception,
     relevant_exception_symbol_matches,
 )
+from codescope.debugging.paired_operations import (
+    called_paired_operation_terms,
+    chunk_defines_operation,
+    chunk_defines_paired_operation,
+    counterpart_terms_for_called_operations,
+    has_paired_state_failure_context,
+    paired_operation_evidence,
+)
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
@@ -34,6 +42,7 @@ def expand_failure_call_path_context(
     max_reverse_depth: int = 2,
     max_reverse_callers_per_seed: int = 3,
     max_reverse_candidates: int = 6,
+    max_paired_counterpart_candidates: int = 4,
 ) -> list[SearchResult]:
     if max_candidates <= 0:
         return []
@@ -87,6 +96,18 @@ def expand_failure_call_path_context(
             max_candidates=max_reverse_candidates,
         )
         for result in reverse_context:
+            _update_best(best_by_id, result)
+
+    if max_paired_counterpart_candidates > 0:
+        paired_context = _expand_paired_counterpart_context(
+            failure=failure,
+            signals=signals,
+            seeds=seeds,
+            graph=graph,
+            already_seen_ids=set(best_by_id) | {seed.chunk.id for seed in seeds},
+            max_candidates=max_paired_counterpart_candidates,
+        )
+        for result in paired_context:
             _update_best(best_by_id, result)
 
     results = list(best_by_id.values())
@@ -285,6 +306,152 @@ def _expand_reverse_source(
     return results
 
 
+def _expand_paired_counterpart_context(
+    *,
+    failure: TestFailure,
+    signals: FailureSignals,
+    seeds: list[SearchResult],
+    graph: DependencyGraph,
+    already_seen_ids: set[str],
+    max_candidates: int,
+) -> list[SearchResult]:
+    primary_terms = _primary_failure_terms(failure)
+    if signals.did_not_raise:
+        return []
+    if not has_paired_state_failure_context(signals=signals, primary_terms=primary_terms):
+        return []
+
+    best_by_id: dict[str, SearchResult] = {}
+    for seed in seeds:
+        source = seed.chunk
+        if not _is_paired_operation_source(source, signals=signals, primary_terms=primary_terms):
+            continue
+
+        called_side_chunks = _resolved_called_side_chunks(source=source, graph=graph)
+        if not called_side_chunks:
+            continue
+
+        counterpart_terms = counterpart_terms_for_called_operations(source)
+        for candidate in graph.chunks():
+            if candidate.id in already_seen_ids:
+                continue
+            if is_test_path(candidate.file_path):
+                continue
+            if not _is_counterpart_candidate(
+                candidate=candidate,
+                counterpart_terms=counterpart_terms,
+                called_side_chunks=called_side_chunks,
+            ):
+                continue
+
+            score = _paired_counterpart_score(source_score=seed.score, candidate=candidate)
+            result = SearchResult(
+                chunk=candidate,
+                score=score,
+                reasons=("paired state operation", "possible missing counterpart operation"),
+            )
+            _update_best(best_by_id, result)
+
+    results = list(best_by_id.values())
+    results.sort(key=_call_path_sort_key)
+    return results[:max_candidates]
+
+
+def _is_paired_operation_source(
+    chunk: CodeChunk, *, signals: FailureSignals, primary_terms: set[str]
+) -> bool:
+    if chunk.chunk_type not in {"function", "method"}:
+        return False
+    evidence = paired_operation_evidence(
+        chunk=chunk,
+        signals=signals,
+        primary_terms=primary_terms,
+    )
+    if not evidence.has_evidence:
+        return False
+    meaningful_terms = (
+        set(signals.operation_words)
+        | set(signals.behavioral_words)
+        | set(signals.domain_words)
+        | primary_terms
+    )
+    direct_pair_match = bool(
+        (set(evidence.called_terms) | set(evidence.counterpart_terms)) & meaningful_terms
+    )
+    primary_action_name_match = bool(
+        identifier_tokens(chunk.name)
+        & (
+            primary_terms
+            & (
+                set(signals.operation_words)
+                | set(signals.behavioral_words)
+                | set(signals.domain_words)
+            )
+        )
+    )
+    return direct_pair_match or primary_action_name_match
+
+
+def _resolved_called_side_chunks(
+    *, source: CodeChunk, graph: DependencyGraph
+) -> tuple[CodeChunk, ...]:
+    called_terms = set(called_paired_operation_terms(source))
+    if not called_terms:
+        return tuple()
+
+    matches: list[CodeChunk] = []
+    seen: set[str] = set()
+    for dependency_name, candidate in graph.related_candidates(source):
+        dependency_terms = identifier_tokens(dependency_name.rsplit(".", 1)[-1])
+        candidate_terms = identifier_tokens(candidate.name)
+        if not (called_terms & (dependency_terms | candidate_terms)):
+            continue
+        if not chunk_defines_paired_operation(candidate):
+            continue
+        if candidate.id in seen:
+            continue
+        seen.add(candidate.id)
+        matches.append(candidate)
+
+    matches.sort(
+        key=lambda chunk: (
+            normalize_path(chunk.file_path),
+            chunk.parent or "",
+            chunk.name,
+            chunk.start_line,
+            chunk.id,
+        )
+    )
+    return tuple(matches)
+
+
+def _is_counterpart_candidate(
+    *,
+    candidate: CodeChunk,
+    counterpart_terms: tuple[str, ...],
+    called_side_chunks: tuple[CodeChunk, ...],
+) -> bool:
+    if not any(chunk_defines_operation(candidate, term) for term in counterpart_terms):
+        return False
+
+    for called_side in called_side_chunks:
+        if candidate.id == called_side.id:
+            continue
+        if candidate.parent and candidate.parent == called_side.parent:
+            return True
+        if normalize_path(candidate.file_path) == normalize_path(called_side.file_path):
+            return True
+
+    return False
+
+
+def _paired_counterpart_score(*, source_score: float, candidate: CodeChunk) -> float:
+    score = max(source_score - 0.15, 0.0)
+    if candidate.chunk_type in {"function", "method"}:
+        score += 0.1
+    return min(score, max(source_score - 0.05, 0.0))
+
+
 def _is_call_path_candidate(
     chunk: CodeChunk, *, signals: FailureSignals, depth: int
 ) -> bool:
@@ -465,6 +632,12 @@ def _call_path_score(
     if not signals.did_not_raise and _is_generic_data_access_candidate(candidate):
         score -= 1.4
 
+    if not signals.did_not_raise and _is_single_side_paired_operation_candidate(
+        candidate=candidate,
+        signals=signals,
+    ):
+        score -= 1.4
+
     if "called by traceback source" in reasons:
         score += 0.4
     if "called by top source chunk" in reasons:
@@ -540,6 +713,19 @@ def _has_expected_exception_or_validation_evidence(
     )
 
 
+def _primary_failure_terms(failure: TestFailure) -> set[str]:
+    return identifier_tokens(
+        "\n".join(
+            [
+                failure.test_name,
+                failure.file_path,
+                failure.error_type or "",
+                failure.message,
+            ]
+        )
+    )
+
+
 def _has_business_source_role(chunk: CodeChunk) -> bool:
     role_words = {
         "api",
@@ -605,6 +791,23 @@ def _is_generic_data_access_candidate(chunk: CodeChunk) -> bool:
         "write",
     )
     return name in crud_prefixes or name.startswith(tuple(f"{prefix}_" for prefix in crud_prefixes))
+
+
+def _is_single_side_paired_operation_candidate(
+    *, candidate: CodeChunk, signals: FailureSignals
+) -> bool:
+    if not chunk_defines_paired_operation(candidate):
+        return False
+    if called_paired_operation_terms(candidate):
+        return False
+    if _has_business_source_role(candidate):
+        return False
+    primary_terms = (
+        set(signals.operation_words)
+        | set(signals.behavioral_words)
+        | set(signals.domain_words)
+    )
+    return has_paired_state_failure_context(signals=signals, primary_terms=primary_terms)
 
 
 def _update_best(best_by_id: dict[str, SearchResult], candidate: SearchResult) -> None:
