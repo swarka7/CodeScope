@@ -101,6 +101,8 @@ CodeScope intentionally prioritizes:
 
 Patch generation and automated repair are planned future milestones, but the current system focuses on finding and explaining the most useful debugging context.
 
+Current benchmark outcomes are documented in [`benchmark_results.md`](benchmark_results.md).
+
 ## Limitations
 
 - Ranking is heuristic and static.

@@ -121,3 +121,7 @@ Scores can vary slightly depending on embedding behavior, but the important cont
 - It does not generate a patch.
 - It does not call an LLM.
 - It does not prove root cause with runtime analysis.
+
+## Benchmark results
+
+For current v0.1 benchmark outcomes on the realistic banking, movie, and inventory examples, see [`benchmark_results.md`](benchmark_results.md).

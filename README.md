@@ -1,105 +1,97 @@
-# CodeScope — AI-powered repository intelligence and failure-aware debugging foundation.
+# CodeScope — Find the code that caused your failing test
 
-CodeScope is an experimental developer-tooling project that builds repository intelligence for Python codebases using AST analysis, semantic retrieval, dependency-aware context, and failure-aware debugging workflows.
+A retrieval-first Python debugging tool that indexes a repository, runs pytest, and ranks likely root-cause code with deterministic explanations.
 
-## Status
+When a test fails, CodeScope helps answer one practical question:
 
-CodeScope is currently under active development.
-Core repository analysis, semantic retrieval, persistent indexing, and failure-aware diagnosis are implemented.
-Autonomous repair, patch generation, safe diff application, and VS Code integration are planned future milestones.
+> Which code should I inspect first?
 
-## What is CodeScope?
+CodeScope is not an LLM wrapper and does not automatically fix bugs. It builds the retrieval and debugging-context layer first: source-aware code search, dependency/call-path expansion, failure-aware ranking, and concise reasons for every result.
 
-CodeScope scans Python repositories, parses code with the Python AST, and extracts searchable code “chunks” (functions, classes, methods, imports, dependencies).
-It builds a persistent semantic index, enriches matches with dependency-aware context, and keeps search grounded in source structure.
-When pytest fails, it turns failure output into a retrieval query, reranks likely source chunks, and prints deterministic reasons for why each result was selected.
+## Why This Matters
 
-## Motivation
+- Failing tests usually show symptoms, not root causes.
+- Large repositories make it hard to know where to start.
+- LLMs are useful, but they need focused, trustworthy context.
+- CodeScope retrieves and explains that context before any optional LLM reasoning.
 
-Large repositories are hard to navigate and even harder to debug under time pressure.
-Semantic retrieval helps you search by intent, and lightweight static analysis provides structure and context around what you find.
-CodeScope explores practical “repository intelligence” and failure-aware diagnosis workflows without assuming a fully autonomous repair system.
+## What CodeScope Does
 
-## Project philosophy
+- Scans Python repositories.
+- Extracts AST-based chunks for functions, classes, and methods.
+- Builds a persistent semantic index.
+- Runs pytest and parses failures.
+- Diagnoses failures against the existing code index.
+- Follows dependency, call-path, and reverse-call context.
+- Ranks likely relevant source code.
+- Explains why each result matters using deterministic reasons.
 
-- Retrieval quality first
-- Explainability first
-- Deterministic behavior first
-- Generalized heuristics before LLM reasoning
-- Patch generation much later, after trustworthy context retrieval
+## Quick Demo
 
-## Features
-
-- Repository scanning
-- AST-based code parsing
-- Function/class/method chunk extraction
-- Import/dependency/decorator extraction
-- Semantic search with embeddings
-- Multi-hop dependency-aware retrieval
-- Persistent and incremental local indexing (`.codescope/`)
-- Pytest runner
-- Failure parsing
-- Failure-aware diagnosis with rule-based summaries (`diagnose`)
-- Deterministic retrieval reasons for diagnose results
-
-## Architecture
+Example from the realistic banking benchmark:
 
 ```text
-Repository
-  ↓
-Scanner
-  ↓
-AST Parser
-  ↓
-Chunker
-  ↓
-Embeddings
-  ↓
-Local Index
-  ↓
-Semantic + Dependency Retrieval
-  ↓
-Failure-Aware Diagnosis
+Failing test:
+tests/test_transfers.py::test_successful_transfer_moves_money_and_records_activity
+
+Likely relevant code:
+1. TransferService.transfer
+   Location: app/service.py:22-45
+   Source: semantic
+   reasons=
+     - operation match: balance, record, transfer
+     - business operation
+     - state update logic
+     - paired state operation
+
+2. Account.credit
+   Location: app/models.py:19-20
+   Source: semantic
+   reasons=
+     - paired state operation
+     - possible missing counterpart operation
 ```
 
-## How it works
+The actual bug: the transfer flow debits the sender but does not credit the receiver. CodeScope ranks the business method first and surfaces the missing counterpart operation as useful context.
 
-- **Repository scanning** discovers Python source files while ignoring generated/cache directories.
-- **AST chunk extraction** turns modules into function, class, and method chunks with imports, decorators, and dependencies.
-- **Semantic indexing** embeds chunk text and stores readable local JSON under `.codescope/`.
-- **Dependency-aware retrieval** expands semantic matches with directly and indirectly related chunks.
-- **Failure-aware pytest diagnosis** parses failing tests, builds a focused query, and reranks likely source code.
-- **Deterministic retrieval reasons** explain each result using rule-based signals such as expected exceptions, validation helpers, traceback files, and keyword overlap.
+## v0.1 Benchmark Status
 
-CodeScope currently does **not** generate patches or apply fixes. The current focus is trustworthy retrieval and debugging context before automated repair.
+PASS means the expected root-cause chunk appears in the top 3 likely relevant code results.
+These are small realistic benchmarks, not proof of production readiness.
 
-## Try it locally
+| benchmark | bug | expected root cause | observed rank | result |
+| --- | --- | --- | --- | --- |
+| `banking_app` | transfer debits sender but does not credit receiver | `TransferService.transfer` | rank 1 | PASS |
+| `movie_platform` | combined search filters ignore genre | `MovieSearchService.search` | rank 1 | PASS |
+| `inventory_app` | insufficient-stock shipment is allowed | `FulfillmentService.ship_order` | rank 3 | PASS |
 
-Run the auth service demo to see indexing, semantic search, and failure-aware diagnosis:
+Full benchmark report: [`docs/benchmark_results.md`](docs/benchmark_results.md).
 
-```bash
-python -m codescope.cli index examples/buggy_auth_service
-python -m codescope.cli search examples/buggy_auth_service "expired token validation"
-python -m codescope.cli diagnose examples/buggy_auth_service
-```
+## Technical Highlights
 
-The diagnosis output should include `CodeScope Diagnose`, `Diagnosis summary`, `Possible issue`, `Likely relevant code`, `Related context`, and deterministic `reasons=...` explanations.
-See the full walkthrough in [`docs/demo.md`](docs/demo.md).
+- **AST chunking** extracts source structure without executing user code.
+- **Semantic embeddings** support intent-based code search.
+- **Persistent local indexing** stores readable JSON under `.codescope/`.
+- **Incremental indexing** reuses unchanged file embeddings.
+- **Atomic index writes** reduce partial/corrupt index risk.
+- **Index compatibility/versioning** rejects stale indexes after schema or embedding-text changes.
+- **Dependency-aware retrieval** expands semantic matches with nearby code relationships.
+- **Static symbol resolution** handles common imports, aliases, relative imports, and same-class methods.
+- **Call-path and reverse-call context** surfaces validators, callers, guards, and related business logic.
+- **ScoreBreakdown-backed explanations** align ranking evidence with user-facing reasons.
+- **Source-first ranking** keeps failing tests visible while prioritizing source code.
+- **Business-behavior ranking** favors services, validators, search/filter logic, and state mutations over plumbing.
+- **Paired state-operation reasoning** helps identify missing counterpart operations such as debit/credit-style bugs.
+- **Deterministic output** keeps ranking and explanations auditable and testable.
 
-## Current limitations
+## Usage
 
-- Symbol resolution is heuristic/static (basic imports + aliases + same-file hints) and does not perform full Python type inference or dynamic import execution.
-- Local indexes use readable JSON storage; incompatible index or embedding-text versions currently trigger rebuilds rather than migrations.
-- Failure diagnosis is rule-based and retrieval-focused; it can suggest likely relevant code, but it does not prove root cause or modify files.
-
-## Installation
-
-Create a virtual environment and install CodeScope in editable mode:
+Install in editable mode:
 
 ```bash
 python -m venv .venv
 
-# Windows (PowerShell)
+# Windows PowerShell
 .venv\Scripts\Activate.ps1
 
 # Linux/macOS
@@ -108,172 +100,110 @@ source .venv/bin/activate
 python -m pip install -e ".[dev,ai]"
 ```
 
-## CLI usage
-
-Scan a repository:
+Index a repository:
 
 ```bash
-python -m codescope.cli scan .
+python -m codescope.cli index <repo>
 ```
 
-Extract chunks (structure view):
+Search indexed code:
 
 ```bash
-python -m codescope.cli chunks .
-```
-
-Build a persistent local index in `.codescope/`:
-
-```bash
-python -m codescope.cli index .
-```
-
-Search (requires an existing index):
-
-```bash
-python -m codescope.cli search . "repository scanner"
+python -m codescope.cli search <repo> "status transition validation"
 ```
 
 Run tests:
 
 ```bash
-python -m codescope.cli test .
+python -m codescope.cli test <repo>
 ```
 
-Diagnose failing tests and retrieve likely relevant code (requires an existing index when tests fail):
+Diagnose failing tests:
 
 ```bash
-python -m codescope.cli diagnose .
+python -m codescope.cli diagnose <repo>
 ```
 
-More detail: see [`docs/failure_aware_diagnosis.md`](docs/failure_aware_diagnosis.md).
+Try a realistic benchmark:
 
-## Failure-aware diagnosis output
+```bash
+python -m codescope.cli index examples/realistic_bugs/banking_app
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app
+```
 
-Diagnose output is designed to show the failure, a concise summary, a cautious rule-based hypothesis, and the code chunks CodeScope retrieved with deterministic reasons:
+More details:
+
+- Demo walkthrough: [`docs/demo.md`](docs/demo.md)
+- Failure-aware diagnosis: [`docs/failure_aware_diagnosis.md`](docs/failure_aware_diagnosis.md)
+- Benchmark results: [`docs/benchmark_results.md`](docs/benchmark_results.md)
+
+## Architecture
 
 ```text
-CodeScope Diagnose
-
-Status
-- Tests failed
-
-Failing test
-- [FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
-- File: tests/test_auth_service.py:12
-
-Failure signal
-- Error: AssertionError
-- Message: assert True is False
-
-Diagnosis summary:
-- Failing test: test_expired_token_is_rejected
-- Failure signal: AssertionError, assert True is False
-- Most relevant source chunk: validate_token in auth_service.py
-- Related context: decode_token, TokenPayload
-- Why: failure/query symbols overlap with retrieved source/context chunks.
-
-Possible issue:
-- validate_token may contain boolean validation logic returning the opposite truth value from what the test expects.
-- This is a hypothesis based on the failure signal and retrieved code, not a proven root cause.
-
-Likely relevant code:
-1. validate_token
-   Kind: function
-   Location: auth_service.py:12-20
-   Source: semantic
-   Score: 1.42
-   reasons=
-     - validation logic
-     - traceback file match
-     - keyword match: expired, rejected
-
-Related context:
-1. decode_token
-   Kind: function
-   Location: token_manager.py:8-15
-   Source: related
-   reasons=
-     - semantic match
+scan repo
+  ↓
+parse AST
+  ↓
+extract chunks
+  ↓
+build embedding text
+  ↓
+index
+  ↓
+semantic + dependency retrieval
+  ↓
+run pytest
+  ↓
+failure-aware ranking
+  ↓
+diagnosis summary + retrieval reasons
 ```
 
-The exact scores and ordering may change as the retrieval heuristics improve, but the output contract is intentionally explainable and deterministic.
+## Philosophy
 
-## Demos
+- Retrieval quality first.
+- Explainability first.
+- Deterministic behavior first.
+- Benchmarks before claims.
+- LLM reasoning later, on top of retrieved context.
+- Patch generation later, not now.
 
-### Buggy calculator (minimal)
+## Limitations
 
-This repo includes a tiny intentionally broken project at `examples/buggy_calculator/`.
+- Python-focused.
+- Static analysis only; no runtime tracing.
+- No automatic fixes or patch generation.
+- No full Python type inference.
+- Rankings are heuristic and benchmark-driven.
+- Current realistic benchmarks are intentionally small.
+- Embedding behavior may vary by model and version.
 
-```bash
-python -m codescope.cli index examples/buggy_calculator
-python -m codescope.cli diagnose examples/buggy_calculator
-```
+## Roadmap
 
-Expected output (example):
+### Current / v0.1
 
-```text
-CodeScope Diagnose
+- Retrieval-first pytest diagnosis.
+- Persistent and incremental local indexing.
+- Semantic, dependency-aware, and call-path-aware retrieval.
+- Deterministic ScoreBreakdown-backed explanations.
+- Realistic benchmark apps.
+- Expected root cause found in the top 3 on the current benchmark set.
 
-Status
-- Tests failed
+### Next
 
-Failing test
-- [FAIL] tests/test_calculator.py::test_calculate_discount_applies_percent
-
-Failure signal
-- Message: calculate_discount(100, 10) returned -900 instead of 90
-
-Diagnosis summary:
-- Failing test: test_calculate_discount_applies_percent
-- Failure signal: AssertionError, calculate_discount(100, 10) returned -900 instead of 90
-- Most relevant source chunk: calculate_discount in calculator.py
-
-Likely relevant code:
-1. calculate_discount
-   Kind: function
-   Location: calculator.py:4-16
-   Source: semantic
-```
-
-### Buggy auth service (more realistic)
-
-For a more backend-style demo, see `examples/buggy_auth_service/` (token parsing + validation).
-
-```bash
-python -m codescope.cli index examples/buggy_auth_service
-python -m codescope.cli diagnose examples/buggy_auth_service
-```
-
-The failing test calls `validate_token(...)` for an expired token and expects `False`, so diagnosis should ideally surface `validate_token` and related token parsing context (e.g. `decode_token`, `TokenPayload`).
-
-### Buggy task API (multi-file backend validation)
-
-For a more realistic multi-file backend example, see `examples/buggy_task_api/`.
-It includes a task model, in-memory repository, service layer, validation helpers, route-like handlers, ownership checks, and task status transitions.
-The intentional bug allows an archived task to be marked done, even though archived tasks should be terminal.
-
-```bash
-python -m codescope.cli index examples/buggy_task_api
-python -m codescope.cli diagnose examples/buggy_task_api
-```
-
-This demo is useful for validating business-rule failures where an invalid operation is accepted instead of rejected.
+- Benchmark evaluator/report command.
+- Structured assertion diff extraction.
+- Larger benchmark set with more bug patterns.
+- Optional LLM diagnosis over retrieved context.
+- VS Code integration later.
+- Patch suggestions much later.
 
 ## Testing
 
 ```bash
-pytest
+python -m pytest
 ruff check .
+python -m pytest examples/realistic_bugs
 ```
 
-## Roadmap
-
-- Source-aware ranking
-- Improved traceback-to-source mapping
-- Patch generation
-- Safe diff application
-- Test validation loop
-- Iterative repair loop
-- Qdrant/FAISS backend
-- VS Code extension
+`examples/realistic_bugs` intentionally contains failing tests; the expected current result is `3 failed, 9 passed`.
