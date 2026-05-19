@@ -1,4 +1,4 @@
-# CodeScope — Find the code that caused your failing test
+# CodeScope — AI-powered code search for failing Python tests
 
 A retrieval-first Python debugging tool that indexes a repository, runs pytest, and ranks likely root-cause code with deterministic explanations.
 
@@ -6,7 +6,7 @@ When a test fails, CodeScope helps answer one practical question:
 
 > Which code should I inspect first?
 
-CodeScope is not an LLM wrapper and does not automatically fix bugs. It builds the retrieval and debugging-context layer first: source-aware code search, dependency/call-path expansion, failure-aware ranking, and concise reasons for every result.
+CodeScope is not an automatic bug fixer, does not generate patches, and is not a thin LLM wrapper. Its core is the retrieval and debugging-context layer: source-aware code search, AST-based chunking, semantic indexing, dependency/call-path expansion, failure-aware ranking, and concise reasons for every result. Optional LLM diagnosis is currently available only through a fake provider for pipeline testing; no real model or network call is used yet.
 
 ## Why This Matters
 
@@ -25,6 +25,7 @@ CodeScope is not an LLM wrapper and does not automatically fix bugs. It builds t
 - Follows dependency, call-path, and reverse-call context.
 - Ranks likely relevant source code.
 - Explains why each result matters using deterministic reasons.
+- Optionally exercises an LLM handoff path with a fake provider for testing.
 
 ## Quick Demo
 
@@ -190,7 +191,7 @@ diagnosis summary + retrieval reasons
 - Explainability first.
 - Deterministic behavior first.
 - Benchmarks before claims.
-- LLM reasoning later, on top of retrieved context.
+- Optional LLM reasoning only on top of retrieved context.
 - Patch generation later, not now.
 
 ## Limitations
@@ -212,16 +213,20 @@ diagnosis summary + retrieval reasons
 - Persistent and incremental local indexing.
 - Semantic, dependency-aware, and call-path-aware retrieval.
 - Deterministic ScoreBreakdown-backed explanations.
-- Optional `diagnose --llm` pipeline with a fake provider for testing context handoff.
 - Realistic benchmark apps.
 - Expected root cause found in the top 3 on the current benchmark set.
 
-### Next
+### v0.2 / Current Next Direction
+
+- Optional LLM diagnosis over retrieved CodeScope context.
+- Fake provider for testing `diagnose --llm`.
+- Real provider integration planned later; no OpenAI provider exists yet.
+
+### Later
 
 - Benchmark evaluator/report command.
 - Structured assertion diff extraction.
 - Larger benchmark set with more bug patterns.
-- Real LLM provider integration over retrieved CodeScope context.
 - VS Code integration later.
 - Patch suggestions much later.
 

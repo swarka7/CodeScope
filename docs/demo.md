@@ -1,6 +1,6 @@
-# Demo: Failure-Aware Diagnosis
+# Demo: CodeScope Search and Failure-Aware Diagnosis
 
-This demo shows CodeScope indexing a realistic example repository, running semantic search, and diagnosing a failing pytest case.
+This demo shows CodeScope indexing a realistic benchmark repository, running semantic search, diagnosing a failing pytest case, and optionally exercising the fake-provider `--llm` flow.
 
 CodeScope retrieves likely relevant debugging context. It does **not** generate or apply patches.
 
@@ -14,10 +14,10 @@ python -m pip install -e ".[dev,ai]"
 
 ## 1. Build the local index
 
-Index the backend-style auth service example:
+Index the realistic banking benchmark:
 
 ```bash
-python -m codescope.cli index examples/buggy_auth_service
+python -m codescope.cli index examples/realistic_bugs/banking_app
 ```
 
 Expected shape:
@@ -33,18 +33,17 @@ Exact counts may change as the example evolves.
 
 ## 2. Run semantic search
 
-Search for expired-token validation logic:
+Search for transfer and balance logic:
 
 ```bash
-python -m codescope.cli search examples/buggy_auth_service "expired token validation"
+python -m codescope.cli search examples/realistic_bugs/banking_app "money transfer balance"
 ```
 
 Expected output includes semantic matches and dependency-aware related context:
 
 ```text
-[semantic] [function] validate_token auth_service.py:... score=...
-[related]  [function] decode_token token_manager.py:...
-[related]  [class] TokenPayload models.py:...
+[semantic] [method] TransferService.transfer app/service.py:... score=...
+[related]  [method] Account.credit app/models.py:...
 ```
 
 ## 3. Diagnose the failing test
@@ -52,7 +51,7 @@ Expected output includes semantic matches and dependency-aware related context:
 Run pytest through CodeScope diagnosis:
 
 ```bash
-python -m codescope.cli diagnose examples/buggy_auth_service
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app
 ```
 
 Expected output shape:
@@ -64,40 +63,38 @@ Status
 - Tests failed
 
 Failing test
-- [FAIL] tests/test_auth_service.py::test_expired_token_is_rejected
+- [FAIL] tests/test_transfers.py::test_successful_transfer_moves_money_and_records_activity
 
 Failure signal
 - Error: AssertionError
-- Message: assert True is False
+- Message: assert (Decimal('75....00'), 1, True) == (Decimal('75....00'), 1, True)
 
 Diagnosis summary:
-- Failing test: test_expired_token_is_rejected
-- Failure signal: AssertionError, assert True is False
-- Most relevant source chunk: validate_token in auth_service.py
-- Related context: decode_token, TokenPayload
+- Failing test: test_successful_transfer_moves_money_and_records_activity
+- Failure signal: AssertionError, assert (Decimal('75....00'), 1, True) == (Decimal('75....00'), 1, True)
+- Most relevant source chunk: TransferService.transfer in app/service.py
+- Related context: TransferRecord, BankRepository.get_account, BankRepository.record_transfer
 - Why: failure/query symbols overlap with retrieved source/context chunks.
 
-Possible issue:
-- validate_token may contain boolean validation logic returning the opposite truth value from what the test expects.
-- This is a hypothesis based on the failure signal and retrieved code, not a proven root cause.
-
 Likely relevant code:
-1. validate_token
-   Kind: function
-   Location: auth_service.py:...
+1. TransferService.transfer
+   Kind: method
+   Location: app/service.py:...
    Source: semantic
    Score: ...
    reasons=
-     - validation logic
-     - keyword match: expired, rejected
+     - operation match: balance, record, transfer
+     - business operation
+     - state update logic
+     - paired state operation
 
-Related context:
-1. decode_token
-   Kind: function
-   Location: token_manager.py:...
+2. Account.credit
+   Kind: method
+   Location: app/models.py:...
    Source: related
    reasons=
-     - semantic match
+     - paired state operation
+     - possible missing counterpart operation
 ```
 
 Scores can vary slightly depending on embedding behavior, but the important contract is:

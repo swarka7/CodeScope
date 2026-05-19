@@ -15,7 +15,11 @@ Semantic retrieval
   ↓
 Failure-aware reranking
   ↓
+ScoreBreakdown-backed scoring
+  ↓
 Dependency-aware context
+  ↓
+Call-path + reverse-call context
   ↓
 Diagnosis summary + retrieval reasons
 ```
@@ -43,6 +47,21 @@ Each diagnose result can include deterministic reasons such as:
 - `operation match: ...`
 
 These reasons are rule-based and are meant to make the ranking auditable. They are not LLM-generated explanations.
+
+The user-facing reasons are backed by structured scoring components where possible. That keeps ranking evidence and explanations aligned instead of maintaining two unrelated sets of heuristics.
+
+## Ranking Signals
+
+Failure-aware ranking is deterministic and static. It can use:
+
+- Source-first ranking to keep test chunks visible but prioritize source code.
+- Expected-exception evidence such as definitions, references, and `raise` statements.
+- Call-path context from source chunks to validators, guards, helpers, and exception logic.
+- Reverse-call context from validators or exception chunks back to likely business callers.
+- Business-behavior signals such as filtering logic, state updates, and operation-name matches.
+- Paired state-operation reasoning for missing counterpart patterns such as debit/credit-style flows.
+
+These signals are intentionally heuristic. They improve ranking quality, but they do not prove the root cause.
 
 ## Example
 

@@ -3,6 +3,8 @@
 CodeScope uses small realistic benchmark applications to check whether failure-aware retrieval surfaces useful debugging context.
 These benchmarks are intentionally broken and are not part of the main passing test suite.
 
+The current success rule measures whether CodeScope points a developer to the expected root-cause chunk quickly. It does not measure automatic repair, and CodeScope does not generate patches.
+
 ## Success Rule
 
 - **PASS**: expected root-cause chunk appears in the top 3 likely relevant code results.
@@ -54,3 +56,4 @@ These benchmarks are intentionally broken and are not part of the main passing t
 - Rankings may change with embedding model, embedding-text version, or scoring changes.
 - Benchmark apps intentionally contain failing tests.
 - CodeScope retrieves likely debugging context; it does not fix code automatically.
+- Optional `diagnose --llm` currently supports only the fake provider for pipeline testing; benchmark results are based on deterministic retrieval output.
