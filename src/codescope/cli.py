@@ -8,12 +8,15 @@ from pathlib import Path
 from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.debugging.issue_hypothesis import build_issue_hypothesis
+from codescope.debugging.llm_context import build_llm_diagnosis_context
+from codescope.debugging.llm_prompt import build_llm_diagnosis_prompt
 from codescope.debugging.retrieval_reasons import build_retrieval_reasons
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
+from codescope.llm import LLMProvider, LLMRequest, load_llm_config, load_llm_provider
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.parser.ast_parser import AstParser
@@ -58,6 +61,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "diagnose", help="Run tests and retrieve likely relevant code"
     )
     diagnose_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+    diagnose_parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Add optional AI-generated reasoning over retrieved CodeScope context",
+    )
 
     return parser
 
@@ -216,7 +224,7 @@ def _handle_test(repo_path: Path, test_path: Path | None) -> int:
     return run_result.exit_code
 
 
-def _handle_diagnose(repo_path: Path) -> int:
+def _handle_diagnose(repo_path: Path, *, use_llm: bool = False) -> int:
     runner = TestRunner()
     run_result = runner.run(repo_path)
 
@@ -250,6 +258,15 @@ def _handle_diagnose(repo_path: Path) -> int:
         return 2
 
     retriever = FailureRetriever(repo_path)
+    llm_provider: LLMProvider | None = None
+    llm_provider_error: str | None = None
+    llm_config = None
+    if use_llm:
+        try:
+            llm_config = load_llm_config()
+            llm_provider = load_llm_provider(llm_config)
+        except ValueError as exc:
+            llm_provider_error = str(exc)
 
     for failure in failures:
         _print_failure_details(failure)
@@ -264,13 +281,25 @@ def _handle_diagnose(repo_path: Path) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-        print(build_diagnosis_summary(failure, results))
+        diagnosis_summary = build_diagnosis_summary(failure, results)
+        print(diagnosis_summary)
         hypothesis = build_issue_hypothesis(failure, results)
         if hypothesis:
             print()
             print(hypothesis)
         print()
         _print_retrieval_sections(results, repo_path=repo_path, failure=failure)
+        if use_llm:
+            print()
+            _print_llm_diagnosis(
+                failure=failure,
+                diagnosis_summary=diagnosis_summary,
+                possible_issue=hypothesis,
+                results=results,
+                provider=llm_provider,
+                model=llm_config.model if llm_config is not None else None,
+                provider_error=llm_provider_error,
+            )
         print()
 
     return run_result.exit_code
@@ -355,6 +384,46 @@ def _print_retrieval_result(
         print(f"     - {reason}")
 
 
+def _print_llm_diagnosis(
+    *,
+    failure: TestFailure,
+    diagnosis_summary: str,
+    possible_issue: str | None,
+    results: list[RetrievalResult],
+    provider: LLMProvider | None,
+    model: str | None,
+    provider_error: str | None,
+) -> None:
+    print("LLM Diagnosis")
+    if provider_error:
+        print("- Unavailable: LLM provider could not be loaded.")
+        print(f"- Reason: {provider_error}")
+        return
+
+    if provider is None:
+        print("- Skipped: no LLM provider configured.")
+        print("- Set CODESCOPE_LLM_PROVIDER=fake to test this section.")
+        return
+
+    context = build_llm_diagnosis_context(
+        failure=failure,
+        diagnosis_summary=diagnosis_summary,
+        possible_issue=possible_issue,
+        retrieval_results=results,
+    )
+    prompt = build_llm_diagnosis_prompt(context)
+    try:
+        response = provider.diagnose(LLMRequest(prompt=prompt, model=model))
+    except Exception as exc:  # noqa: BLE001 - provider failures should not break diagnose.
+        print("- Unavailable: LLM diagnosis provider failed.")
+        print(f"- Reason: {exc}")
+        return
+
+    print("AI-generated reasoning based only on retrieved CodeScope context.")
+    print()
+    print(response.text)
+
+
 def _chunk_display_name(chunk: CodeChunk) -> str:
     if chunk.chunk_type == "method" and chunk.parent:
         return f"{chunk.parent}.{chunk.name}"
@@ -388,7 +457,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_test(args.repo_path, args.test_path)
 
     if args.command == "diagnose":
-        return _handle_diagnose(args.repo_path)
+        return _handle_diagnose(args.repo_path, use_llm=args.llm)
 
     raise AssertionError(f"Unhandled command: {args.command}")
 
