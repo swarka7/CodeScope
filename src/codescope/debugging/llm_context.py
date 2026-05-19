@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from codescope.debugging.retrieval_reasons import build_retrieval_reasons
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult
+
+DEFAULT_MAX_TOTAL_CONTEXT_CHARS = 12_000
+DEFAULT_MAX_FAILURE_MESSAGE_CHARS = 1_200
+REDACTION_PLACEHOLDER = "[REDACTED]"
+
+_SENSITIVE_NAME_PATTERN = r"[\w.-]*(?:api[_-]?key|token|password|secret)[\w.-]*"
+_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<prefix>[\"']?\b{_SENSITIVE_NAME_PATTERN}\b[\"']?\s*[:=]\s*)"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)"
+)
+_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
+    rf"(?i)(?P<prefix>\b{_SENSITIVE_NAME_PATTERN}\b\s*=\s*)"
+    r"(?P<value>[^\s,;)}\]]+)"
+)
+_AUTHORIZATION_BEARER_RE = re.compile(
+    r"(?i)(authorization\s*:\s*bearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)"
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)(\bbearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +68,12 @@ def build_llm_diagnosis_context(
     max_semantic_chunks: int = 5,
     max_related_chunks: int = 5,
     max_traceback_chars: int = 1200,
+    max_failure_message_chars: int = DEFAULT_MAX_FAILURE_MESSAGE_CHARS,
     max_code_snippet_chars: int = 3000,
     max_code_snippet_lines: int = 80,
     max_dependencies: int = 12,
     max_reasons: int = 6,
-    max_total_context_chars: int | None = None,
+    max_total_context_chars: int | None = DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
 ) -> LLMDiagnosisContext:
     """Build a deterministic, bounded packet for optional LLM diagnosis.
 
@@ -86,14 +106,19 @@ def build_llm_diagnosis_context(
             file_path=failure.file_path,
             line_number=failure.line_number,
             error_type=failure.error_type,
-            message=failure.message,
+            message=_truncate_text(
+                _redact_sensitive_text(failure.message),
+                max_chars=max_failure_message_chars,
+            ),
             traceback_excerpt=_truncate_text(
-                failure.traceback.strip(),
+                _redact_sensitive_text(failure.traceback.strip()),
                 max_chars=max_traceback_chars,
             ),
         ),
-        diagnosis_summary=diagnosis_summary,
-        possible_issue=possible_issue,
+        diagnosis_summary=_redact_sensitive_text(diagnosis_summary),
+        possible_issue=(
+            _redact_sensitive_text(possible_issue) if possible_issue is not None else None
+        ),
         chunks=chunks,
     )
 
@@ -156,7 +181,7 @@ def _build_chunk_context(
         start_line=chunk.start_line,
         end_line=chunk.end_line,
         score=result.score,
-        reasons=tuple(reasons),
+        reasons=tuple(_redact_sensitive_text(reason) for reason in reasons),
         dependencies=tuple(chunk.dependencies[: max(max_dependencies, 0)]),
         code_snippet=_truncate_code(
             chunk.source_code,
@@ -177,7 +202,8 @@ def _truncate_code(source: str, *, max_chars: int, max_lines: int) -> str:
     if max_lines <= 0 or max_chars <= 0:
         return ""
 
-    lines = source.rstrip().splitlines()
+    redacted_source = _redact_sensitive_text(source)
+    lines = redacted_source.rstrip().splitlines()
     truncated_by_line = len(lines) > max_lines
     snippet = "\n".join(lines[:max_lines])
     if truncated_by_line:
@@ -196,6 +222,31 @@ def _truncate_text(value: str, *, max_chars: int) -> str:
     return value[: max_chars - 3].rstrip() + "..."
 
 
+def _redact_sensitive_text(value: str) -> str:
+    if not value:
+        return value
+
+    redacted = _QUOTED_SECRET_ASSIGNMENT_RE.sub(_replace_quoted_secret, value)
+    redacted = _UNQUOTED_SECRET_ASSIGNMENT_RE.sub(_replace_unquoted_secret, redacted)
+    redacted = _AUTHORIZATION_BEARER_RE.sub(
+        lambda match: f"{match.group(1)}{REDACTION_PLACEHOLDER}",
+        redacted,
+    )
+    return _BEARER_TOKEN_RE.sub(
+        lambda match: f"{match.group(1)}{REDACTION_PLACEHOLDER}",
+        redacted,
+    )
+
+
+def _replace_quoted_secret(match: re.Match[str]) -> str:
+    quote = match.group("quote")
+    return f"{match.group('prefix')}{quote}{REDACTION_PLACEHOLDER}{quote}"
+
+
+def _replace_unquoted_secret(match: re.Match[str]) -> str:
+    return f"{match.group('prefix')}{REDACTION_PLACEHOLDER}"
+
+
 def _apply_total_context_cap(
     context: LLMDiagnosisContext, *, max_chars: int
 ) -> LLMDiagnosisContext:
@@ -211,14 +262,34 @@ def _apply_total_context_cap(
     while chunks and _context_size(context, tuple(chunks)) > max_chars:
         chunks.pop()
 
-    return LLMDiagnosisContext(
-        failure=context.failure,
-        diagnosis_summary=_truncate_text(context.diagnosis_summary, max_chars=max_chars),
-        possible_issue=(
-            _truncate_text(context.possible_issue, max_chars=max_chars)
+    diagnosis_summary = context.diagnosis_summary
+    possible_issue = context.possible_issue
+    if _context_size(context, tuple(chunks)) > max_chars:
+        empty_text_context = LLMDiagnosisContext(
+            failure=context.failure,
+            diagnosis_summary="",
+            possible_issue=None,
+            chunks=tuple(chunks),
+        )
+        summary_budget = max(max_chars - _context_size(empty_text_context, tuple(chunks)), 0)
+        diagnosis_summary = _truncate_text(context.diagnosis_summary, max_chars=summary_budget)
+        summary_context = LLMDiagnosisContext(
+            failure=context.failure,
+            diagnosis_summary=diagnosis_summary,
+            possible_issue=None,
+            chunks=tuple(chunks),
+        )
+        issue_budget = max(max_chars - _context_size(summary_context, tuple(chunks)), 0)
+        possible_issue = (
+            _truncate_text(context.possible_issue, max_chars=issue_budget)
             if context.possible_issue is not None
             else None
-        ),
+        )
+
+    return LLMDiagnosisContext(
+        failure=context.failure,
+        diagnosis_summary=diagnosis_summary,
+        possible_issue=possible_issue,
         chunks=tuple(chunks),
     )
 

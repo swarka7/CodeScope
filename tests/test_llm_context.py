@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from codescope.debugging.llm_context import build_llm_diagnosis_context
+from codescope.debugging.llm_context import (
+    DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
+    REDACTION_PLACEHOLDER,
+    LLMDiagnosisContext,
+    build_llm_diagnosis_context,
+)
+from codescope.debugging.llm_prompt import build_llm_diagnosis_prompt
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult
@@ -171,6 +177,122 @@ def test_optional_total_context_cap_drops_chunks_deterministically() -> None:
     assert [chunk.name for chunk in context.chunks] in ([], ["one"])
 
 
+def test_sensitive_values_are_redacted_in_failure_summary_issue_and_snippets() -> None:
+    context = build_llm_diagnosis_context(
+        failure=_failure(
+            message="OPENAI_API_KEY='sk-message-secret' caused auth failure",
+            traceback=(
+                "Authorization: Bearer traceback-secret-token\n"
+                "password = 'traceback-password'"
+            ),
+        ),
+        diagnosis_summary="token = 'summary-token' but normal diagnosis text remains",
+        possible_issue="secret = 'issue-secret' should not leave context",
+        retrieval_results=[
+            _result(
+                _chunk(
+                    source_code="\n".join(
+                        [
+                            "API_KEY = 'sk-code-secret'",
+                            "token = 'code-token'",
+                            "password = 'code-password'",
+                            "client_secret = 'code-secret'",
+                            "Authorization: Bearer code-bearer-token",
+                            "safe_value = 'visible'",
+                        ]
+                    )
+                )
+            )
+        ],
+    )
+
+    context_text = _context_text(context)
+
+    assert REDACTION_PLACEHOLDER in context_text
+    assert "sk-message-secret" not in context_text
+    assert "traceback-secret-token" not in context_text
+    assert "traceback-password" not in context_text
+    assert "summary-token" not in context_text
+    assert "issue-secret" not in context_text
+    assert "sk-code-secret" not in context_text
+    assert "code-token" not in context_text
+    assert "code-password" not in context_text
+    assert "code-secret" not in context_text
+    assert "code-bearer-token" not in context_text
+    assert "normal diagnosis text remains" in context_text
+    assert "safe_value = 'visible'" in context_text
+
+
+def test_redacted_text_is_what_reaches_prompt() -> None:
+    context = build_llm_diagnosis_context(
+        failure=_failure(message="api_key = 'prompt-secret'"),
+        diagnosis_summary="Diagnosis summary with password = 'prompt-password'",
+        possible_issue=None,
+        retrieval_results=[
+            _result(_chunk(source_code='TOKEN = "prompt-token"\nprint("safe")\n'))
+        ],
+    )
+
+    prompt = build_llm_diagnosis_prompt(context)
+
+    assert REDACTION_PLACEHOLDER in prompt
+    assert "prompt-secret" not in prompt
+    assert "prompt-password" not in prompt
+    assert "prompt-token" not in prompt
+    assert 'print("safe")' in prompt
+
+
+def test_default_total_context_cap_is_applied() -> None:
+    large_source = "x = '" + ("x" * 4000) + "'"
+    results = [
+        _result(_chunk(id=f"large_{index}", name=f"large_{index}", source_code=large_source))
+        for index in range(5)
+    ]
+
+    context = build_llm_diagnosis_context(
+        failure=_failure(),
+        diagnosis_summary="summary",
+        possible_issue="possible issue",
+        retrieval_results=results,
+    )
+
+    assert _context_payload_size(context) <= DEFAULT_MAX_TOTAL_CONTEXT_CHARS
+    assert len(context.chunks) < len(results)
+    assert [chunk.name for chunk in context.chunks] == [
+        f"large_{index}" for index in range(len(context.chunks))
+    ]
+
+
+def test_ordering_remains_deterministic_after_redaction() -> None:
+    results = [
+        _result(
+            _chunk(
+                id="first",
+                name="first",
+                source_code="token = 'first-secret'\nvalue = 1\n",
+            )
+        ),
+        _result(
+            _chunk(
+                id="second",
+                name="second",
+                source_code="token = 'second-secret'\nvalue = 2\n",
+            )
+        ),
+    ]
+
+    context = build_llm_diagnosis_context(
+        failure=_failure(),
+        diagnosis_summary="summary",
+        possible_issue=None,
+        retrieval_results=results,
+    )
+
+    assert [chunk.name for chunk in context.chunks] == ["first", "second"]
+    assert "first-secret" not in _context_text(context)
+    assert "second-secret" not in _context_text(context)
+
+
 def _failure(
     *,
     message: str = "assert value",
@@ -184,6 +306,33 @@ def _failure(
         message=message,
         traceback=traceback,
     )
+
+
+def _context_text(context: LLMDiagnosisContext) -> str:
+    values = [
+        context.failure.test_name,
+        context.failure.file_path,
+        context.failure.error_type or "",
+        context.failure.message,
+        context.failure.traceback_excerpt,
+        context.diagnosis_summary,
+        context.possible_issue or "",
+    ]
+    for chunk in context.chunks:
+        values.extend(
+            [
+                chunk.name,
+                chunk.file_path,
+                " ".join(chunk.reasons),
+                " ".join(chunk.dependencies),
+                chunk.code_snippet,
+            ]
+        )
+    return "\n".join(values)
+
+
+def _context_payload_size(context: LLMDiagnosisContext) -> int:
+    return len(_context_text(context))
 
 
 def _result(
