@@ -107,6 +107,41 @@ Scores can vary slightly depending on embedding behavior, but the important cont
 - Likely relevant code and related context are listed in readable sections.
 - Each result includes deterministic `reasons=...` text.
 
+## 4. Optional LLM diagnosis pipeline
+
+CodeScope can optionally pass the deterministic diagnose context to a configured LLM provider. The normal diagnose output still prints first, and retrieval remains the source of truth.
+
+The currently documented provider is `fake`. It is for testing the pipeline only:
+
+- It does not call a real model.
+- It does not require an API key.
+- It does not modify files or generate patches.
+
+Windows PowerShell:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+Linux/macOS:
+
+```bash
+CODESCOPE_LLM_PROVIDER=fake python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+Expected fake-provider section:
+
+```text
+LLM Diagnosis
+AI-generated reasoning based only on retrieved CodeScope context.
+
+Fake LLM diagnosis based on provided CodeScope context.
+```
+
+If `--llm` is used without a configured provider, CodeScope still prints normal diagnose output and reports that the LLM section was skipped.
+
 ## What the demo proves
 
 - CodeScope can index a realistic multi-file Python example.
@@ -114,12 +149,13 @@ Scores can vary slightly depending on embedding behavior, but the important cont
 - Dependency-aware retrieval can include nearby validation and exception context.
 - Failure-aware diagnosis can connect a pytest failure to likely source code.
 - Explanations are deterministic and rule-based.
+- The optional LLM path can receive bounded retrieved context without replacing deterministic retrieval.
 
 ## What the demo does not do
 
 - It does not fix the bug.
 - It does not generate a patch.
-- It does not call an LLM.
+- It does not call a real LLM provider yet.
 - It does not prove root cause with runtime analysis.
 
 ## Benchmark results

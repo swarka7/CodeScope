@@ -103,6 +103,48 @@ Patch generation and automated repair are planned future milestones, but the cur
 
 Current benchmark outcomes are documented in [`benchmark_results.md`](benchmark_results.md).
 
+## Optional LLM diagnosis
+
+`diagnose --llm` adds an optional AI-generated section after the normal deterministic diagnose output. The LLM does not replace CodeScope retrieval:
+
+1. CodeScope runs pytest and failure-aware retrieval first.
+2. CodeScope builds a compact context packet from the failure summary, retrieved chunks, reasons, dependencies, and bounded snippets.
+3. The configured provider receives that context.
+4. Output appears under a clearly labeled `LLM Diagnosis` section.
+
+The currently documented provider is `fake`, which is only for testing the pipeline. It does not call a real model and does not require an API key.
+
+Windows PowerShell:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+Linux/macOS:
+
+```bash
+CODESCOPE_LLM_PROVIDER=fake python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+Expected fake-provider section:
+
+```text
+LLM Diagnosis
+AI-generated reasoning based only on retrieved CodeScope context.
+
+Fake LLM diagnosis based on provided CodeScope context.
+```
+
+Trust boundaries:
+
+- `--llm` is optional.
+- The output is AI-generated reasoning over retrieved CodeScope context.
+- Missing provider configuration does not break normal diagnose.
+- CodeScope does not modify files or generate patches.
+- Real provider integration is not implemented yet.
+
 ## Limitations
 
 - Ranking is heuristic and static.

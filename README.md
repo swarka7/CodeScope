@@ -124,6 +124,31 @@ Diagnose failing tests:
 python -m codescope.cli diagnose <repo>
 ```
 
+Optionally exercise the v0.2 LLM diagnosis pipeline with the fake provider:
+
+```powershell
+# Windows PowerShell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+```bash
+# Linux/macOS
+CODESCOPE_LLM_PROVIDER=fake python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+`--llm` runs normal deterministic diagnose first, then sends a compact retrieved-context packet to the configured provider. The current documented provider is `fake`; it does not call a real model, does not require an API key, and is only for testing the optional LLM pipeline.
+
+Expected fake-provider section:
+
+```text
+LLM Diagnosis
+AI-generated reasoning based only on retrieved CodeScope context.
+
+Fake LLM diagnosis based on provided CodeScope context.
+```
+
 Try a realistic benchmark:
 
 ```bash
@@ -173,6 +198,7 @@ diagnosis summary + retrieval reasons
 - Python-focused.
 - Static analysis only; no runtime tracing.
 - No automatic fixes or patch generation.
+- No real LLM provider is implemented yet; `--llm` currently supports the fake provider for pipeline testing.
 - No full Python type inference.
 - Rankings are heuristic and benchmark-driven.
 - Current realistic benchmarks are intentionally small.
@@ -186,6 +212,7 @@ diagnosis summary + retrieval reasons
 - Persistent and incremental local indexing.
 - Semantic, dependency-aware, and call-path-aware retrieval.
 - Deterministic ScoreBreakdown-backed explanations.
+- Optional `diagnose --llm` pipeline with a fake provider for testing context handoff.
 - Realistic benchmark apps.
 - Expected root cause found in the top 3 on the current benchmark set.
 
@@ -194,7 +221,7 @@ diagnosis summary + retrieval reasons
 - Benchmark evaluator/report command.
 - Structured assertion diff extraction.
 - Larger benchmark set with more bug patterns.
-- Optional LLM diagnosis over retrieved context.
+- Real LLM provider integration over retrieved CodeScope context.
 - VS Code integration later.
 - Patch suggestions much later.
 
