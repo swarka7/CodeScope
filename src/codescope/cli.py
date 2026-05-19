@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -65,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--llm",
         action="store_true",
         help="Add optional AI-generated reasoning over retrieved CodeScope context",
+    )
+    diagnose_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable diagnose results as JSON",
     )
 
     return parser
@@ -224,11 +231,21 @@ def _handle_test(repo_path: Path, test_path: Path | None) -> int:
     return run_result.exit_code
 
 
-def _handle_diagnose(repo_path: Path, *, use_llm: bool = False) -> int:
+def _handle_diagnose(
+    repo_path: Path, *, use_llm: bool = False, json_output: bool = False
+) -> int:
     runner = TestRunner()
     run_result = runner.run(repo_path)
 
     combined_output = "\n".join([run_result.stdout, run_result.stderr]).strip()
+
+    if json_output:
+        return _handle_diagnose_json(
+            repo_path=repo_path,
+            use_llm=use_llm,
+            run_exit_code=run_result.exit_code,
+            combined_output=combined_output,
+        )
 
     if run_result.exit_code == 0:
         _print_diagnose_status("Tests passed")
@@ -303,6 +320,236 @@ def _handle_diagnose(repo_path: Path, *, use_llm: bool = False) -> int:
         print()
 
     return run_result.exit_code
+
+
+def _handle_diagnose_json(
+    *,
+    repo_path: Path,
+    use_llm: bool,
+    run_exit_code: int,
+    combined_output: str,
+) -> int:
+    if run_exit_code == 0:
+        _print_json(
+            {
+                "schema_version": 1,
+                "status": "passed",
+                "repo": repo_path.as_posix(),
+                "diagnose_exit_code": 0,
+                "failures": [],
+            }
+        )
+        return 0
+
+    failures = FailureParser().parse(combined_output)
+    if not failures:
+        _print_json(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "repo": repo_path.as_posix(),
+                "diagnose_exit_code": run_exit_code,
+                "message": combined_output,
+                "failures": [],
+            }
+        )
+        return run_exit_code
+
+    try:
+        compatibility = check_index_compatibility(
+            index_store=IndexStore(repo_path),
+            embedding_model_name=Embedder().model_name,
+        )
+    except (OSError, ValueError) as exc:
+        _print_json_error(repo_path=repo_path, message=f"Error: {exc}", exit_code=2)
+        return 2
+
+    if not compatibility.compatible:
+        _print_json_error(repo_path=repo_path, message=compatibility.message, exit_code=2)
+        return 2
+
+    retriever = FailureRetriever(repo_path)
+    llm_provider: LLMProvider | None = None
+    llm_provider_error: str | None = None
+    llm_config = None
+    if use_llm:
+        try:
+            llm_config = load_llm_config()
+            llm_provider = load_llm_provider(llm_config)
+        except ValueError as exc:
+            llm_provider_error = str(exc)
+
+    failure_items = []
+    for failure in failures:
+        try:
+            results = retriever.retrieve(failure, top_k=5)
+        except ValueError as exc:
+            _print_json_error(repo_path=repo_path, message=str(exc), exit_code=2)
+            return 2
+
+        diagnosis_summary = build_diagnosis_summary(failure, results)
+        possible_issue = build_issue_hypothesis(failure, results)
+        failure_items.append(
+            _diagnose_failure_json(
+                failure=failure,
+                results=results,
+                repo_path=repo_path,
+                diagnosis_summary=diagnosis_summary,
+                possible_issue=possible_issue,
+                llm=(
+                    _llm_diagnosis_json(
+                        failure=failure,
+                        diagnosis_summary=diagnosis_summary,
+                        possible_issue=possible_issue,
+                        results=results,
+                        provider=llm_provider,
+                        model=llm_config.model if llm_config is not None else None,
+                        provider_error=llm_provider_error,
+                    )
+                    if use_llm
+                    else None
+                ),
+            )
+        )
+
+    _print_json(
+        {
+            "schema_version": 1,
+            "status": "failed",
+            "repo": repo_path.as_posix(),
+            "diagnose_exit_code": run_exit_code,
+            "failures": failure_items,
+        }
+    )
+    return run_exit_code
+
+
+def _print_json_error(*, repo_path: Path, message: str, exit_code: int) -> None:
+    _print_json(
+        {
+            "schema_version": 1,
+            "status": "error",
+            "repo": repo_path.as_posix(),
+            "diagnose_exit_code": exit_code,
+            "message": message,
+            "failures": [],
+        }
+    )
+
+
+def _print_json(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _diagnose_failure_json(
+    *,
+    failure: TestFailure,
+    results: list[RetrievalResult],
+    repo_path: Path,
+    diagnosis_summary: str,
+    possible_issue: str | None,
+    llm: dict[str, object] | None,
+) -> dict[str, object]:
+    item: dict[str, object] = {
+        "test_name": failure.test_name,
+        "file_path": failure.file_path,
+        "line_number": failure.line_number,
+        "error_type": failure.error_type,
+        "message": failure.message,
+        "diagnosis_summary": diagnosis_summary,
+        "possible_issue": possible_issue,
+        "likely_relevant_code": [
+            _retrieval_result_json(rank, result, repo_path=repo_path, failure=failure)
+            for rank, result in enumerate(
+                [result for result in results if result.kind == "semantic"],
+                start=1,
+            )
+        ],
+        "related_context": [
+            _retrieval_result_json(rank, result, repo_path=repo_path, failure=failure)
+            for rank, result in enumerate(
+                [result for result in results if result.kind == "related"],
+                start=1,
+            )
+        ],
+    }
+    if llm is not None:
+        item["llm"] = llm
+    return item
+
+
+def _retrieval_result_json(
+    rank: int, result: RetrievalResult, *, repo_path: Path, failure: TestFailure
+) -> dict[str, object]:
+    chunk = result.chunk
+    return {
+        "rank": rank,
+        "name": _chunk_display_name(chunk),
+        "kind": chunk.chunk_type,
+        "file_path": _chunk_file_path(chunk, repo_path=repo_path),
+        "start_line": chunk.start_line,
+        "end_line": chunk.end_line,
+        "source": result.kind,
+        "score": result.score,
+        "reasons": build_retrieval_reasons(failure, chunk, extra_reasons=result.reasons),
+        "dependencies": list(chunk.dependencies),
+    }
+
+
+def _llm_diagnosis_json(
+    *,
+    failure: TestFailure,
+    diagnosis_summary: str,
+    possible_issue: str | None,
+    results: list[RetrievalResult],
+    provider: LLMProvider | None,
+    model: str | None,
+    provider_error: str | None,
+) -> dict[str, object]:
+    if provider_error:
+        return {
+            "enabled": True,
+            "provider": None,
+            "model": model,
+            "status": "error",
+            "message": "LLM provider unavailable",
+        }
+
+    if provider is None:
+        return {
+            "enabled": True,
+            "provider": None,
+            "model": model,
+            "status": "skipped",
+            "message": "no LLM provider configured",
+        }
+
+    context = build_llm_diagnosis_context(
+        failure=failure,
+        diagnosis_summary=diagnosis_summary,
+        possible_issue=possible_issue,
+        retrieval_results=results,
+    )
+    prompt = build_llm_diagnosis_prompt(context)
+    try:
+        response = provider.diagnose(LLMRequest(prompt=prompt, model=model))
+    except Exception:  # noqa: BLE001 - provider failures should not break diagnose JSON.
+        return {
+            "enabled": True,
+            "provider": getattr(provider, "name", None),
+            "model": model,
+            "status": "error",
+            "message": "LLM provider unavailable",
+        }
+
+    return {
+        "enabled": True,
+        "provider": response.provider,
+        "model": response.model,
+        "status": "completed",
+        "text": response.text,
+        "message": "completed",
+    }
 
 
 def _print_diagnose_status(status: str) -> None:
@@ -431,11 +678,15 @@ def _chunk_display_name(chunk: CodeChunk) -> str:
 
 
 def _chunk_location(chunk: CodeChunk, *, repo_path: Path) -> str:
+    return f"{_chunk_file_path(chunk, repo_path=repo_path)}:{chunk.start_line}-{chunk.end_line}"
+
+
+def _chunk_file_path(chunk: CodeChunk, *, repo_path: Path) -> str:
     try:
         display_path = Path(chunk.file_path).relative_to(repo_path).as_posix()
     except ValueError:
         display_path = chunk.file_path
-    return f"{display_path}:{chunk.start_line}-{chunk.end_line}"
+    return display_path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -457,7 +708,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_test(args.repo_path, args.test_path)
 
     if args.command == "diagnose":
-        return _handle_diagnose(args.repo_path, use_llm=args.llm)
+        return _handle_diagnose(args.repo_path, use_llm=args.llm, json_output=args.json_output)
 
     raise AssertionError(f"Unhandled command: {args.command}")
 

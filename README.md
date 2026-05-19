@@ -125,6 +125,12 @@ Diagnose failing tests:
 python -m codescope.cli diagnose <repo>
 ```
 
+Emit machine-readable diagnose output for tools and extensions:
+
+```bash
+python -m codescope.cli diagnose <repo> --json
+```
+
 Optionally exercise the v0.2 LLM diagnosis pipeline with the fake provider:
 
 ```powershell
