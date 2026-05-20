@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from codescope.benchmark import BenchmarkEvaluation, evaluate_benchmarks
 from codescope.debugging.diagnosis_summary import build_diagnosis_summary
 from codescope.debugging.failure_retriever import FailureRetriever
 from codescope.debugging.issue_hypothesis import build_issue_hypothesis
@@ -74,6 +75,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Print machine-readable diagnose results as JSON",
+    )
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark", help="Evaluate CodeScope against benchmark apps"
+    )
+    benchmark_parser.add_argument(
+        "benchmarks_path",
+        type=Path,
+        help="Path to a directory containing CodeScope benchmark apps",
     )
 
     return parser
@@ -231,6 +241,56 @@ def _handle_test(repo_path: Path, test_path: Path | None) -> int:
         print(combined_output)
 
     return run_result.exit_code
+
+
+def _handle_benchmark(benchmarks_path: Path) -> int:
+    try:
+        evaluation = evaluate_benchmarks(benchmarks_path)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    _print_benchmark_report(evaluation)
+    return 0 if evaluation.successful else 1
+
+
+def _print_benchmark_report(evaluation: BenchmarkEvaluation) -> None:
+    rows = [
+        (
+            result.name,
+            result.expected_root_cause,
+            str(result.observed_rank) if result.observed_rank is not None else "-",
+            result.result,
+        )
+        for result in evaluation.results
+    ]
+    headers = ("benchmark", "expected root cause", "rank", "result")
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows)) if rows else len(header)
+        for index, header in enumerate(headers)
+    ]
+
+    print("CodeScope Benchmark Report")
+    print()
+    print(_format_benchmark_row(headers, widths))
+    for row in rows:
+        print(_format_benchmark_row(row, widths))
+    print()
+    print("Summary:")
+    print(
+        f"{evaluation.pass_count} PASS, "
+        f"{evaluation.partial_count} PARTIAL, "
+        f"{evaluation.fail_count} FAIL"
+    )
+
+
+def _format_benchmark_row(row: tuple[str, str, str, str], widths: list[int]) -> str:
+    return (
+        f"{row[0].ljust(widths[0])}  "
+        f"{row[1].ljust(widths[1])}  "
+        f"{row[2].ljust(widths[2])}  "
+        f"{row[3].ljust(widths[3])}"
+    )
 
 
 def _handle_diagnose(
@@ -720,6 +780,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "test":
         return _handle_test(args.repo_path, args.test_path)
+
+    if args.command == "benchmark":
+        return _handle_benchmark(args.benchmarks_path)
 
     if args.command == "diagnose":
         return _handle_diagnose(args.repo_path, use_llm=args.llm, json_output=args.json_output)
