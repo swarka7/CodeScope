@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def normalize_path(path: str) -> str:
     normalized = path.replace("\\", "/").strip()
@@ -23,4 +21,4 @@ def is_test_path(path: str) -> bool:
 
 
 def display_path(path: str) -> str:
-    return Path(path).as_posix()
+    return path.replace("\\", "/")

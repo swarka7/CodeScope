@@ -25,3 +25,18 @@ def test_is_test_path_rejects_source_files() -> None:
 
 def test_display_path_uses_forward_slashes() -> None:
     assert display_path(r"src\auth\service.py") == "src/auth/service.py"
+
+
+def test_display_path_keeps_posix_paths_stable() -> None:
+    assert display_path("src/auth/service.py") == "src/auth/service.py"
+
+
+def test_display_path_preserves_relative_prefix_with_forward_slashes() -> None:
+    assert display_path(r".\src\auth\service.py") == "./src/auth/service.py"
+
+
+def test_display_path_normalizes_path_under_repo_root() -> None:
+    assert (
+        display_path(r"project\src\auth\service.py")
+        == "project/src/auth/service.py"
+    )
