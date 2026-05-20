@@ -1,6 +1,6 @@
 # CodeScope — AI-powered code search for failing Python tests
 
-[![CI](https://github.com/SwarkaAnabosi/CodeScope/actions/workflows/ci.yml/badge.svg)](https://github.com/SwarkaAnabosi/CodeScope/actions/workflows/ci.yml)
+[![CI](https://github.com/swarka7/CodeScope/actions/workflows/ci.yml/badge.svg)](https://github.com/swarka7/CodeScope/actions/workflows/ci.yml)
 
 A retrieval-first Python debugging tool that indexes a repository, runs pytest, and ranks likely root-cause code with deterministic explanations.
 
