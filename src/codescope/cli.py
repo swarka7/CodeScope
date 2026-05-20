@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import sys
 from collections.abc import Sequence
@@ -329,31 +331,49 @@ def _handle_diagnose_json(
     run_exit_code: int,
     combined_output: str,
 ) -> int:
-    if run_exit_code == 0:
-        _print_json(
-            {
-                "schema_version": 1,
-                "status": "passed",
-                "repo": repo_path.as_posix(),
-                "diagnose_exit_code": 0,
-                "failures": [],
-            }
+    captured_stdout = io.StringIO()
+    with contextlib.redirect_stdout(captured_stdout):
+        exit_code, payload = _build_diagnose_json_payload(
+            repo_path=repo_path,
+            use_llm=use_llm,
+            run_exit_code=run_exit_code,
+            combined_output=combined_output,
         )
-        return 0
+
+    captured = captured_stdout.getvalue()
+    if captured:
+        print(captured, file=sys.stderr, end="")
+
+    _print_json(payload)
+    return exit_code
+
+
+def _build_diagnose_json_payload(
+    *,
+    repo_path: Path,
+    use_llm: bool,
+    run_exit_code: int,
+    combined_output: str,
+) -> tuple[int, dict[str, object]]:
+    if run_exit_code == 0:
+        return 0, {
+            "schema_version": 1,
+            "status": "passed",
+            "repo": repo_path.as_posix(),
+            "diagnose_exit_code": 0,
+            "failures": [],
+        }
 
     failures = FailureParser().parse(combined_output)
     if not failures:
-        _print_json(
-            {
-                "schema_version": 1,
-                "status": "failed",
-                "repo": repo_path.as_posix(),
-                "diagnose_exit_code": run_exit_code,
-                "message": combined_output,
-                "failures": [],
-            }
-        )
-        return run_exit_code
+        return run_exit_code, {
+            "schema_version": 1,
+            "status": "failed",
+            "repo": repo_path.as_posix(),
+            "diagnose_exit_code": run_exit_code,
+            "message": combined_output,
+            "failures": [],
+        }
 
     try:
         compatibility = check_index_compatibility(
@@ -361,12 +381,12 @@ def _handle_diagnose_json(
             embedding_model_name=Embedder().model_name,
         )
     except (OSError, ValueError) as exc:
-        _print_json_error(repo_path=repo_path, message=f"Error: {exc}", exit_code=2)
-        return 2
+        return 2, _json_error_payload(repo_path=repo_path, message=f"Error: {exc}", exit_code=2)
 
     if not compatibility.compatible:
-        _print_json_error(repo_path=repo_path, message=compatibility.message, exit_code=2)
-        return 2
+        return 2, _json_error_payload(
+            repo_path=repo_path, message=compatibility.message, exit_code=2
+        )
 
     retriever = FailureRetriever(repo_path)
     llm_provider: LLMProvider | None = None
@@ -384,8 +404,7 @@ def _handle_diagnose_json(
         try:
             results = retriever.retrieve(failure, top_k=5)
         except ValueError as exc:
-            _print_json_error(repo_path=repo_path, message=str(exc), exit_code=2)
-            return 2
+            return 2, _json_error_payload(repo_path=repo_path, message=str(exc), exit_code=2)
 
         diagnosis_summary = build_diagnosis_summary(failure, results)
         possible_issue = build_issue_hypothesis(failure, results)
@@ -412,29 +431,24 @@ def _handle_diagnose_json(
             )
         )
 
-    _print_json(
-        {
-            "schema_version": 1,
-            "status": "failed",
-            "repo": repo_path.as_posix(),
-            "diagnose_exit_code": run_exit_code,
-            "failures": failure_items,
-        }
-    )
-    return run_exit_code
+    return run_exit_code, {
+        "schema_version": 1,
+        "status": "failed",
+        "repo": repo_path.as_posix(),
+        "diagnose_exit_code": run_exit_code,
+        "failures": failure_items,
+    }
 
 
-def _print_json_error(*, repo_path: Path, message: str, exit_code: int) -> None:
-    _print_json(
-        {
-            "schema_version": 1,
-            "status": "error",
-            "repo": repo_path.as_posix(),
-            "diagnose_exit_code": exit_code,
-            "message": message,
-            "failures": [],
-        }
-    )
+def _json_error_payload(*, repo_path: Path, message: str, exit_code: int) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "error",
+        "repo": repo_path.as_posix(),
+        "diagnose_exit_code": exit_code,
+        "message": message,
+        "failures": [],
+    }
 
 
 def _print_json(payload: dict[str, object]) -> None:

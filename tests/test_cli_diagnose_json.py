@@ -29,7 +29,10 @@ def test_diagnose_json_outputs_valid_machine_readable_failure(
 
     assert exit_code == 1
     assert captured.err == ""
+    assert captured.out.startswith("{")
     assert "CodeScope Diagnose" not in captured.out
+    assert "Warning:" not in captured.out
+    assert "Loading weights" not in captured.out
     assert payload["schema_version"] == 1
     assert payload["status"] == "failed"
     assert payload["diagnose_exit_code"] == 1
@@ -114,10 +117,15 @@ def test_diagnose_json_llm_fake_provider_includes_completed_response(
     capsys.readouterr()
 
     exit_code = cli_module.main(["diagnose", str(repo_path), "--json", "--llm"])
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     llm = payload["failures"][0]["llm"]
 
     assert exit_code == 1
+    assert captured.out.startswith("{")
+    assert "LLM Diagnosis" not in captured.out
+    assert "Warning:" not in captured.out
+    assert "Loading weights" not in captured.out
     assert llm["enabled"] is True
     assert llm["provider"] == "fake"
     assert llm["status"] == "completed"
@@ -183,10 +191,45 @@ def test_diagnose_json_missing_index_outputs_error_json(
 
     assert exit_code == 2
     assert captured.err == ""
+    assert captured.out.startswith("{")
     assert payload["status"] == "error"
     assert payload["diagnose_exit_code"] == 2
     assert payload["failures"] == []
     assert "No CodeScope index found" in payload["message"]
+
+
+def test_diagnose_json_redirects_incidental_stdout_to_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_fake_embedder(monkeypatch)
+    repo_path = _write_failing_project(tmp_path)
+    assert cli_module.main(["index", str(repo_path)]) == 0
+    capsys.readouterr()
+
+    class NoisyRetriever:
+        def __init__(self, repo_path: Path) -> None:
+            _ = repo_path
+
+        def retrieve(self, failure: object, *, top_k: int = 5) -> list[RetrievalResult]:
+            _ = failure
+            _ = top_k
+            print("Warning: noisy third-party stdout")
+            print("Loading weights: noisy progress")
+            return _FakeRetriever(repo_path).retrieve(failure, top_k=top_k)
+
+    monkeypatch.setattr(cli_module, "FailureRetriever", NoisyRetriever)
+
+    exit_code = cli_module.main(["diagnose", str(repo_path), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert captured.out.startswith("{")
+    assert "Warning:" not in captured.out
+    assert "Loading weights" not in captured.out
+    assert "Warning: noisy third-party stdout" in captured.err
+    assert "Loading weights: noisy progress" in captured.err
+    assert payload["status"] == "failed"
 
 
 def test_diagnose_without_json_keeps_human_output(
