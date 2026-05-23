@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from codescope.llm.fake_provider import FakeLLMProvider
+from codescope.llm.openai_provider import OpenAIProvider
 from codescope.llm.providers import LLMProvider
 
 PROVIDER_ENV_VAR = "CODESCOPE_LLM_PROVIDER"
@@ -31,6 +32,8 @@ def load_llm_provider(config: LLMConfig | None = None) -> LLMProvider | None:
         return None
     if provider == "fake":
         return FakeLLMProvider(model=resolved.model)
+    if provider == "openai":
+        return OpenAIProvider(model=resolved.model)
     raise ValueError(f"Unsupported LLM provider: {resolved.provider}")
 
 

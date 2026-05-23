@@ -4,6 +4,7 @@ import pytest
 
 from codescope.llm.config import LLMConfig, load_llm_config, load_llm_provider
 from codescope.llm.fake_provider import FakeLLMProvider
+from codescope.llm.openai_provider import OpenAIProvider
 from codescope.llm.providers import LLMRequest
 
 
@@ -56,10 +57,20 @@ def test_load_llm_provider_returns_fake_provider() -> None:
     assert response.model == "fake-model"
 
 
+def test_load_llm_provider_returns_openai_provider() -> None:
+    provider = load_llm_provider(LLMConfig(provider="openai", model="openai-model"))
+
+    assert isinstance(provider, OpenAIProvider)
+
+
 def test_load_llm_provider_is_case_insensitive() -> None:
     provider = load_llm_provider(LLMConfig(provider="FaKe", model="fake-model"))
 
     assert isinstance(provider, FakeLLMProvider)
+
+    provider = load_llm_provider(LLMConfig(provider="OpenAI", model="openai-model"))
+
+    assert isinstance(provider, OpenAIProvider)
 
 
 def test_load_llm_provider_rejects_invalid_provider_clearly() -> None:

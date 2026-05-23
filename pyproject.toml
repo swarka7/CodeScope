@@ -21,6 +21,9 @@ dev = [
 ai = [
   "sentence-transformers>=2.2",
 ]
+openai = [
+  "openai>=1.0",
+]
 vectorstore = [
   "qdrant-client>=1.6",
 ]
