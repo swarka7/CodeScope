@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -65,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Number of likely relevant code results to return",
+    )
+    investigate_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print machine-readable investigate results as JSON",
     )
 
     test_parser = subparsers.add_parser("test", help="Run pytest and extract failure details")
@@ -230,7 +237,12 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
     return 0
 
 
-def _handle_investigate(repo_path: Path, description: str, top_k: int) -> int:
+def _handle_investigate(
+    repo_path: Path, description: str, top_k: int, *, json_output: bool = False
+) -> int:
+    if json_output:
+        return _handle_investigate_json(repo_path=repo_path, description=description, top_k=top_k)
+
     try:
         result = Investigator(repo_path).investigate(description, top_k=top_k)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
@@ -239,6 +251,100 @@ def _handle_investigate(repo_path: Path, description: str, top_k: int) -> int:
 
     _print_investigation_result(result)
     return 0
+
+
+def _handle_investigate_json(*, repo_path: Path, description: str, top_k: int) -> int:
+    with _redirect_stdout_to_stderr():
+        exit_code, payload = _build_investigate_json_payload(
+            repo_path=repo_path,
+            description=description,
+            top_k=top_k,
+        )
+
+    _print_json(payload)
+    return exit_code
+
+
+def _build_investigate_json_payload(
+    *, repo_path: Path, description: str, top_k: int
+) -> tuple[int, dict[str, object]]:
+    query = _clean_cli_query(description)
+    try:
+        result = Investigator(repo_path).investigate(description, top_k=top_k)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        return 2, _investigate_json_error_payload(
+            repo_path=repo_path,
+            query=query,
+            message=str(exc),
+        )
+
+    return 0, {
+        "schema_version": 1,
+        "status": "ok",
+        "repo": repo_path.as_posix(),
+        "query": result.query,
+        "likely_relevant_code": [
+            _investigation_code_result_json(item) for item in result.likely_relevant_code
+        ],
+        "related_context": [
+            _investigation_code_result_json(item) for item in result.related_context
+        ],
+    }
+
+
+def _investigate_json_error_payload(
+    *, repo_path: Path, query: str, message: str
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "error",
+        "repo": repo_path.as_posix(),
+        "query": query,
+        "message": message,
+        "likely_relevant_code": [],
+        "related_context": [],
+    }
+
+
+def _investigation_code_result_json(result: InvestigationCodeResult) -> dict[str, object]:
+    return {
+        "rank": result.rank,
+        "name": result.name,
+        "kind": result.kind,
+        "file_path": result.file_path,
+        "start_line": result.start_line,
+        "end_line": result.end_line,
+        "source": result.source,
+        "score": result.score,
+        "reasons": list(result.reasons),
+        "dependencies": list(result.dependencies),
+    }
+
+
+def _clean_cli_query(query: str) -> str:
+    return " ".join((query or "").split())
+
+
+@contextlib.contextmanager
+def _redirect_stdout_to_stderr():
+    try:
+        saved_stdout_fd = os.dup(1)
+    except OSError:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+        return
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.dup2(2, 1)
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout_fd, 1)
+        os.close(saved_stdout_fd)
 
 
 def _print_investigation_result(result: InvestigationResult) -> None:
@@ -835,7 +941,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_search(args.repo_path, args.query, args.top_k)
 
     if args.command == "investigate":
-        return _handle_investigate(args.repo_path, args.description, args.top_k)
+        return _handle_investigate(
+            args.repo_path,
+            args.description,
+            args.top_k,
+            json_output=args.json_output,
+        )
 
     if args.command == "test":
         return _handle_test(args.repo_path, args.test_path)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -100,6 +102,114 @@ def test_cli_investigate_top_k_limits_likely_relevant_results(
     assert "2. operation_two" not in captured.out
 
 
+def test_cli_investigate_json_outputs_valid_machine_readable_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _NoisyFakeEmbedder)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    service = _chunk(
+        repo_path,
+        name="transfer",
+        parent="LedgerService",
+        chunk_type="method",
+        file_path="app/service.py",
+        source=(
+            "def transfer(self, sender, receiver, amount):\n"
+            "    sender.debit(amount)\n"
+            "    self.validate_transfer(sender, receiver, amount)\n"
+        ),
+        dependencies=["validate_transfer"],
+    )
+    validator = _chunk(
+        repo_path,
+        name="validate_transfer",
+        file_path="app/validators.py",
+        source="def validate_transfer(sender, receiver, amount):\n    return amount > 0\n",
+    )
+    _save_index(repo_path, [service, validator])
+
+    exit_code = cli_module.main(
+        [
+            "investigate",
+            str(repo_path),
+            "transferring money does not update the receiver balance",
+            "--top-k",
+            "1",
+            "--json",
+        ]
+    )
+    captured = capfd.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert captured.out.startswith("{")
+    assert "CodeScope Investigate" not in captured.out
+    assert "Warning:" not in captured.out
+    assert "Loading weights" not in captured.out
+    assert "Warning:" in captured.err
+    assert "Loading weights" in captured.err
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "ok"
+    assert payload["query"] == "transferring money does not update the receiver balance"
+    assert payload["likely_relevant_code"][0]["name"] == "LedgerService.transfer"
+    assert payload["likely_relevant_code"][0]["source"] == "semantic"
+    assert isinstance(payload["likely_relevant_code"][0]["reasons"], list)
+    assert isinstance(payload["likely_relevant_code"][0]["dependencies"], list)
+    assert payload["related_context"][0]["name"] == "validate_transfer"
+    assert isinstance(payload["related_context"][0]["reasons"], list)
+    assert isinstance(payload["related_context"][0]["dependencies"], list)
+
+
+def test_cli_investigate_json_top_k_limits_semantic_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _FakeEmbedder)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(
+        repo_path,
+        [
+            _chunk(repo_path, name="operation_one", file_path="app/one.py"),
+            _chunk(repo_path, name="operation_two", file_path="app/two.py"),
+        ],
+    )
+
+    exit_code = cli_module.main(
+        ["investigate", str(repo_path), "operation", "--top-k", "1", "--json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert [item["name"] for item in payload["likely_relevant_code"]] == ["operation_one"]
+
+
+def test_cli_investigate_json_missing_index_returns_error_object(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    exit_code = cli_module.main(
+        ["investigate", str(repo_path), "something is broken", "--json"]
+    )
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert captured.out.startswith("{")
+    assert "CodeScope Investigate" not in captured.out
+    assert payload == {
+        "schema_version": 1,
+        "status": "error",
+        "repo": str(repo_path).replace("\\", "/"),
+        "query": "something is broken",
+        "message": "No CodeScope index found. Run: python -m codescope.cli index <repo_path>",
+        "likely_relevant_code": [],
+        "related_context": [],
+    }
+
+
 def _save_index(repo_path: Path, chunks: list[CodeChunk]) -> None:
     IndexStore(repo_path).save(
         chunks=chunks,
@@ -144,3 +254,10 @@ class _FakeEmbedder:
     def embed_text(self, text: str) -> list[float]:
         _ = text
         return [1.0]
+
+
+class _NoisyFakeEmbedder(_FakeEmbedder):
+    def embed_text(self, text: str) -> list[float]:
+        print("Warning: fake model loading progress")
+        os.write(1, b"Loading weights: fake progress\n")
+        return super().embed_text(text)

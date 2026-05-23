@@ -22,6 +22,7 @@ CodeScope is not an automatic bug fixer, does not generate patches, and is not a
 - Scans Python repositories.
 - Extracts AST-based chunks for functions, classes, and methods.
 - Builds a persistent semantic index.
+- Investigates natural-language bug descriptions without requiring a pytest failure.
 - Runs pytest and parses failures.
 - Diagnoses failures against the existing code index.
 - Follows dependency, call-path, and reverse-call context.
@@ -113,6 +114,18 @@ Search indexed code:
 
 ```bash
 python -m codescope.cli search <repo> "status transition validation"
+```
+
+Investigate a natural-language bug description without running pytest:
+
+```bash
+python -m codescope.cli investigate <repo> "When I transfer money, the receiver balance does not increase"
+```
+
+Emit machine-readable investigate output for tools and extensions:
+
+```bash
+python -m codescope.cli investigate <repo> "When I transfer money, the receiver balance does not increase" --json
 ```
 
 Run tests:
