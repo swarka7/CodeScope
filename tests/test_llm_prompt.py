@@ -63,13 +63,15 @@ def test_prompt_is_valid_without_possible_issue() -> None:
     assert "Rule-based possible issue:" not in prompt
     assert "Diagnosis summary:" in prompt
     assert "Retrieved chunks:" in prompt
-    assert "LLM Diagnosis" in prompt
+    assert "Do not include a title or repeat the `LLM Diagnosis` heading." in prompt
 
 
 def test_prompt_includes_output_format() -> None:
     prompt = build_llm_diagnosis_prompt(_context())
 
     assert "Write the answer in this exact structure:" in prompt
+    assert "Do not include a title or repeat the `LLM Diagnosis` heading." in prompt
+    assert "Start directly with these bullet sections:" in prompt
     assert "- Likely root cause:" in prompt
     assert "- Inspect first:" in prompt
     assert "- Why these chunks matter:" in prompt

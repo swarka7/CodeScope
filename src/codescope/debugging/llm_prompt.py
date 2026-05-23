@@ -124,7 +124,8 @@ def _output_format_section() -> str:
         [
             "Write the answer in this exact structure:",
             "",
-            "LLM Diagnosis",
+            "Do not include a title or repeat the `LLM Diagnosis` heading.",
+            "Start directly with these bullet sections:",
             "- Likely root cause:",
             "- Inspect first:",
             "- Why these chunks matter:",
