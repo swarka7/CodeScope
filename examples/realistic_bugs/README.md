@@ -30,6 +30,33 @@ python -m codescope.cli index examples/realistic_bugs/inventory_app
 python -m codescope.cli diagnose examples/realistic_bugs/inventory_app
 ```
 
+Run the benchmark evaluator:
+
+```powershell
+python -m codescope.cli benchmark examples/realistic_bugs
+```
+
+Expected evaluator result:
+
+```text
+3 PASS, 0 PARTIAL, 0 FAIL
+```
+
+Run natural-language investigation without pytest:
+
+```powershell
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase"
+python -m codescope.cli investigate examples/realistic_bugs/movie_platform "When I filter movies by genre and rating, wrong genres appear"
+python -m codescope.cli investigate examples/realistic_bugs/inventory_app "When I ship an order with insufficient stock, it is allowed"
+```
+
+Use JSON output for tools and future editor integrations:
+
+```powershell
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --json
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --json
+```
+
 ## Banking Transfer App
 
 Path: `examples/realistic_bugs/banking_app`

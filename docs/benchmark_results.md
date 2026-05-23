@@ -19,6 +19,30 @@ The current success rule measures whether CodeScope points a developer to the ex
 | `movie_platform` | combined search filters ignore genre | `test_combined_filters_require_genre_rating_and_year_to_match` | `MovieSearchService.search` | 1 | PASS |
 | `inventory_app` | insufficient-stock shipment is allowed | `test_order_with_insufficient_stock_cannot_ship` | `FulfillmentService.ship_order` | 3 | PASS |
 
+## Running the Evaluator
+
+The benchmark evaluator runs CodeScope diagnose over the known realistic benchmark apps and reports whether each expected root-cause chunk appears near the top:
+
+```bash
+python -m codescope.cli benchmark examples/realistic_bugs
+```
+
+Expected output shape:
+
+```text
+CodeScope Benchmark Report
+
+benchmark        expected root cause            rank   result
+banking_app      TransferService.transfer       1      PASS
+movie_platform   MovieSearchService.search      1      PASS
+inventory_app    FulfillmentService.ship_order  3      PASS
+
+Summary:
+3 PASS, 0 PARTIAL, 0 FAIL
+```
+
+The command is a retrieval-quality check, not a repair benchmark.
+
 ## Banking App
 
 **Bug:** a successful transfer decreases the sender balance but does not increase the receiver balance.

@@ -1,6 +1,6 @@
-# Demo: CodeScope Search and Failure-Aware Diagnosis
+# Demo: CodeScope Search, Investigate, and Diagnose
 
-This demo shows CodeScope indexing a realistic benchmark repository, running semantic search, diagnosing a failing pytest case, and optionally exercising the `--llm` flow.
+This demo shows CodeScope indexing a realistic benchmark repository, running semantic search, investigating a natural-language bug description, diagnosing a failing pytest case, and optionally exercising the `--llm` flow.
 
 CodeScope retrieves likely relevant debugging context. It does **not** generate or apply patches.
 
@@ -52,7 +52,53 @@ Expected output includes semantic matches and dependency-aware related context:
 [related]  [method] Account.credit app/models.py:...
 ```
 
-## 3. Diagnose the failing test
+## 3. Investigate a natural-language bug report
+
+Use `investigate` when you have a bug description but do not want CodeScope to run pytest:
+
+```bash
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase"
+```
+
+Expected output shape:
+
+```text
+CodeScope Investigate
+
+Query:
+When I transfer money, the receiver balance does not increase
+
+Likely relevant code:
+1. TransferService.transfer
+   Kind: method
+   Location: app/service.py:...
+   Source: semantic
+   Score: ...
+   reasons=
+     - semantic match
+     - operation match: balance, receiver, transfer
+     - business operation
+     - state update logic
+
+Related context:
+1. Account.credit
+   Kind: method
+   Location: app/models.py:...
+   Source: related
+   reasons=
+     - paired state operation
+     - possible missing counterpart operation
+```
+
+For tools and future editor integrations, use JSON output:
+
+```bash
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --json
+```
+
+`investigate --json` writes one valid JSON object to stdout and does not include human-readable section headers.
+
+## 4. Diagnose the failing test
 
 Run pytest through CodeScope diagnosis:
 
@@ -110,7 +156,39 @@ Scores can vary slightly depending on embedding behavior, but the important cont
 - Likely relevant code and related context are listed in readable sections.
 - Each result includes deterministic `reasons=...` text.
 
-## 4. Optional LLM diagnosis pipeline
+For tools and future editor integrations, use JSON output:
+
+```bash
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --json
+```
+
+`diagnose --json` writes one valid JSON object to stdout. It preserves the same ranking and exit behavior as normal diagnose.
+
+## 5. Benchmark evaluator
+
+Run all realistic benchmark apps through CodeScope’s benchmark evaluator:
+
+```bash
+python -m codescope.cli benchmark examples/realistic_bugs
+```
+
+Expected output shape:
+
+```text
+CodeScope Benchmark Report
+
+benchmark        expected root cause            rank   result
+banking_app      TransferService.transfer       1      PASS
+movie_platform   MovieSearchService.search      1      PASS
+inventory_app    FulfillmentService.ship_order  3      PASS
+
+Summary:
+3 PASS, 0 PARTIAL, 0 FAIL
+```
+
+The evaluator checks whether the expected root-cause chunk appears in the top 3 likely relevant code results. It does not fix benchmark bugs.
+
+## 6. Optional LLM diagnosis pipeline
 
 CodeScope can optionally pass the deterministic diagnose context to a configured LLM provider. The normal diagnose output still prints first, and retrieval remains the source of truth.
 
@@ -177,7 +255,9 @@ If `--llm` is used without a configured provider, CodeScope still prints normal 
 - Semantic search can find code by intent, not just exact text.
 - Dependency-aware retrieval can include nearby validation and exception context.
 - Failure-aware diagnosis can connect a pytest failure to likely source code.
+- `investigate` can retrieve likely relevant code from a natural-language bug description without running tests.
 - Explanations are deterministic and rule-based.
+- JSON output is available for tooling and future editor integrations.
 - The optional LLM path can receive bounded retrieved/redacted context without replacing deterministic retrieval.
 
 ## What the demo does not do

@@ -2,6 +2,8 @@
 
 CodeScope’s `diagnose` command connects pytest failures to likely relevant source code from an existing local index. It does not generate patches, apply fixes, or claim a proven root cause.
 
+Use `diagnose` when you want CodeScope to run pytest and analyze real failure output. Use `investigate` when you have a natural-language bug description and want likely relevant code to inspect without running tests.
+
 ## Pipeline
 
 ```text
@@ -108,6 +110,16 @@ Related context:
    reasons=
      - semantic match
 ```
+
+## JSON output
+
+`diagnose --json` is intended for tools and future editor integrations:
+
+```bash
+python -m codescope.cli diagnose <repo> --json
+```
+
+JSON mode preserves the same deterministic retrieval behavior and exit codes as human-readable diagnose. It writes a single JSON object to stdout containing failures, diagnosis summaries, likely relevant code, related context, scores, reasons, and optional LLM status when `--llm` is also enabled.
 
 ## Design constraints
 
