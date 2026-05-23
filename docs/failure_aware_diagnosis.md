@@ -131,7 +131,7 @@ Current benchmark outcomes are documented in [`benchmark_results.md`](benchmark_
 3. The configured provider receives that context.
 4. Output appears under a clearly labeled `LLM Diagnosis` section.
 
-The currently documented provider is `fake`, which is only for testing the pipeline. It does not call a real model and does not require an API key.
+The `fake` provider is useful for testing the pipeline without network access or an API key.
 
 Windows PowerShell:
 
@@ -156,13 +156,43 @@ AI-generated reasoning based only on retrieved CodeScope context.
 Fake LLM diagnosis based on provided CodeScope context.
 ```
 
+To use the optional OpenAI provider, install the extra:
+
+```bash
+python -m pip install -e ".[openai]"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="openai"
+$env:OPENAI_API_KEY="..."
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+Remove-Item Env:OPENAI_API_KEY
+```
+
+Linux/macOS:
+
+```bash
+CODESCOPE_LLM_PROVIDER=openai OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+Optional model override:
+
+```bash
+CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
 Trust boundaries:
 
 - `--llm` is optional.
 - The output is AI-generated reasoning over retrieved CodeScope context.
+- The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI.
+- Real provider usage requires internet access and may incur API cost.
 - Missing provider configuration does not break normal diagnose.
 - CodeScope does not modify files or generate patches.
-- Real provider integration is not implemented yet.
+- Deterministic diagnose output remains the source of truth.
 
 ## Limitations
 

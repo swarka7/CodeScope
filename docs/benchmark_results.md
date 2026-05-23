@@ -56,4 +56,4 @@ The current success rule measures whether CodeScope points a developer to the ex
 - Rankings may change with embedding model, embedding-text version, or scoring changes.
 - Benchmark apps intentionally contain failing tests.
 - CodeScope retrieves likely debugging context; it does not fix code automatically.
-- Optional `diagnose --llm` currently supports only the fake provider for pipeline testing; benchmark results are based on deterministic retrieval output.
+- Optional `diagnose --llm` can use a fake provider or optional OpenAI provider, but benchmark results are based on deterministic retrieval output.

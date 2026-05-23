@@ -1,6 +1,6 @@
 # Demo: CodeScope Search and Failure-Aware Diagnosis
 
-This demo shows CodeScope indexing a realistic benchmark repository, running semantic search, diagnosing a failing pytest case, and optionally exercising the fake-provider `--llm` flow.
+This demo shows CodeScope indexing a realistic benchmark repository, running semantic search, diagnosing a failing pytest case, and optionally exercising the `--llm` flow.
 
 CodeScope retrieves likely relevant debugging context. It does **not** generate or apply patches.
 
@@ -10,6 +10,12 @@ Install the project with development and AI dependencies:
 
 ```bash
 python -m pip install -e ".[dev,ai]"
+```
+
+Install the optional OpenAI provider only if you want real model-backed `--llm` output:
+
+```bash
+python -m pip install -e ".[openai]"
 ```
 
 ## 1. Build the local index
@@ -108,7 +114,7 @@ Scores can vary slightly depending on embedding behavior, but the important cont
 
 CodeScope can optionally pass the deterministic diagnose context to a configured LLM provider. The normal diagnose output still prints first, and retrieval remains the source of truth.
 
-The currently documented provider is `fake`. It is for testing the pipeline only:
+The `fake` provider is for testing the pipeline only:
 
 - It does not call a real model.
 - It does not require an API key.
@@ -137,6 +143,32 @@ AI-generated reasoning based only on retrieved CodeScope context.
 Fake LLM diagnosis based on provided CodeScope context.
 ```
 
+OpenAI provider:
+
+Windows PowerShell:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="openai"
+$env:OPENAI_API_KEY="..."
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+Remove-Item Env:OPENAI_API_KEY
+```
+
+Linux/macOS:
+
+```bash
+CODESCOPE_LLM_PROVIDER=openai OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+Optional model override:
+
+```bash
+CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI. It requires internet access, may incur API cost, and produces AI-generated reasoning over the retrieved context. CodeScope still does not modify files or generate patches.
+
 If `--llm` is used without a configured provider, CodeScope still prints normal diagnose output and reports that the LLM section was skipped.
 
 ## What the demo proves
@@ -146,13 +178,13 @@ If `--llm` is used without a configured provider, CodeScope still prints normal 
 - Dependency-aware retrieval can include nearby validation and exception context.
 - Failure-aware diagnosis can connect a pytest failure to likely source code.
 - Explanations are deterministic and rule-based.
-- The optional LLM path can receive bounded retrieved context without replacing deterministic retrieval.
+- The optional LLM path can receive bounded retrieved/redacted context without replacing deterministic retrieval.
 
 ## What the demo does not do
 
 - It does not fix the bug.
 - It does not generate a patch.
-- It does not call a real LLM provider yet.
+- It does not guarantee the LLM explanation is correct.
 - It does not prove root cause with runtime analysis.
 
 ## Benchmark results

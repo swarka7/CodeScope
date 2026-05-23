@@ -8,7 +8,7 @@ When a test fails, CodeScope helps answer one practical question:
 
 > Which code should I inspect first?
 
-CodeScope is not an automatic bug fixer, does not generate patches, and is not a thin LLM wrapper. Its core is the retrieval and debugging-context layer: source-aware code search, AST-based chunking, semantic indexing, dependency/call-path expansion, failure-aware ranking, and concise reasons for every result. Optional LLM diagnosis is currently available only through a fake provider for pipeline testing; no real model or network call is used yet.
+CodeScope is not an automatic bug fixer, does not generate patches, and is not a thin LLM wrapper. Its core is the retrieval and debugging-context layer: source-aware code search, AST-based chunking, semantic indexing, dependency/call-path expansion, failure-aware ranking, and concise reasons for every result. Optional LLM diagnosis can run on top of retrieved CodeScope context through either a fake provider for testing or an optional OpenAI provider.
 
 ## Why This Matters
 
@@ -28,7 +28,7 @@ CodeScope is not an automatic bug fixer, does not generate patches, and is not a
 - Follows dependency, call-path, and reverse-call context.
 - Ranks likely relevant source code.
 - Explains why each result matters using deterministic reasons.
-- Optionally exercises an LLM handoff path with a fake provider for testing.
+- Optionally adds LLM reasoning over retrieved/redacted context.
 
 ## Quick Demo
 
@@ -104,6 +104,12 @@ source .venv/bin/activate
 python -m pip install -e ".[dev,ai]"
 ```
 
+Install optional OpenAI provider support only if you want real `--llm` calls:
+
+```bash
+python -m pip install -e ".[openai]"
+```
+
 Index a repository:
 
 ```bash
@@ -146,7 +152,7 @@ Emit machine-readable diagnose output for tools and extensions:
 python -m codescope.cli diagnose <repo> --json
 ```
 
-Optionally exercise the v0.2 LLM diagnosis pipeline with the fake provider:
+Optionally exercise the LLM diagnosis pipeline with the fake provider:
 
 ```powershell
 # Windows PowerShell
@@ -160,7 +166,7 @@ Remove-Item Env:CODESCOPE_LLM_PROVIDER
 CODESCOPE_LLM_PROVIDER=fake python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
-`--llm` runs normal deterministic diagnose first, then sends a compact retrieved-context packet to the configured provider. The current documented provider is `fake`; it does not call a real model, does not require an API key, and is only for testing the optional LLM pipeline.
+`--llm` runs normal deterministic diagnose first, then sends a compact retrieved-context packet to the configured provider. The `fake` provider does not call a real model, does not require an API key, and is useful for testing the optional LLM pipeline.
 
 Expected fake-provider section:
 
@@ -170,6 +176,30 @@ AI-generated reasoning based only on retrieved CodeScope context.
 
 Fake LLM diagnosis based on provided CodeScope context.
 ```
+
+Use the optional OpenAI provider:
+
+```powershell
+# Windows PowerShell
+$env:CODESCOPE_LLM_PROVIDER="openai"
+$env:OPENAI_API_KEY="..."
+python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+Remove-Item Env:OPENAI_API_KEY
+```
+
+```bash
+# Linux/macOS
+CODESCOPE_LLM_PROVIDER=openai OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+Optionally override the model:
+
+```bash
+CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+```
+
+The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI, requires internet access, and may incur API cost. Deterministic diagnose output remains the source of truth; LLM output is AI-generated reasoning over that retrieved context. CodeScope still does not modify files or generate patches.
 
 Try a realistic benchmark:
 
@@ -220,7 +250,7 @@ diagnosis summary + retrieval reasons
 - Python-focused.
 - Static analysis only; no runtime tracing.
 - No automatic fixes or patch generation.
-- No real LLM provider is implemented yet; `--llm` currently supports the fake provider for pipeline testing.
+- Optional OpenAI provider requires the `openai` extra, internet access, and `OPENAI_API_KEY`.
 - No full Python type inference.
 - Rankings are heuristic and benchmark-driven.
 - Current realistic benchmarks are intentionally small.
@@ -241,7 +271,7 @@ diagnosis summary + retrieval reasons
 
 - Optional LLM diagnosis over retrieved CodeScope context.
 - Fake provider for testing `diagnose --llm`.
-- Real provider integration planned later; no OpenAI provider exists yet.
+- Optional OpenAI provider for real model-backed explanations.
 
 ### Later
 
