@@ -20,6 +20,7 @@ from codescope.graph.dependency_graph import DependencyGraph
 from codescope.indexing.index_compatibility import check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
+from codescope.investigation import InvestigationCodeResult, InvestigationResult, Investigator
 from codescope.llm import LLMProvider, LLMRequest, load_llm_config, load_llm_provider
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
@@ -51,6 +52,20 @@ def _build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
     search_parser.add_argument("query", type=str, help="Search query text")
     search_parser.add_argument("--top-k", type=int, default=5, help="Number of results to return")
+
+    investigate_parser = subparsers.add_parser(
+        "investigate", help="Find likely relevant code for a bug description"
+    )
+    investigate_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+    investigate_parser.add_argument(
+        "description", type=str, help="Natural-language bug description"
+    )
+    investigate_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Number of likely relevant code results to return",
+    )
 
     test_parser = subparsers.add_parser("test", help="Run pytest and extract failure details")
     test_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
@@ -213,6 +228,47 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
             print(f"{kind_tag} {type_tag} {chunk_name} {location}")
 
     return 0
+
+
+def _handle_investigate(repo_path: Path, description: str, top_k: int) -> int:
+    try:
+        result = Investigator(repo_path).investigate(description, top_k=top_k)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    _print_investigation_result(result)
+    return 0
+
+
+def _print_investigation_result(result: InvestigationResult) -> None:
+    print("CodeScope Investigate")
+    print()
+    print("Query:")
+    print(result.query)
+    print()
+    print("Likely relevant code to inspect:")
+    _print_investigation_code_results(result.likely_relevant_code)
+    print()
+    print("Related context:")
+    _print_investigation_code_results(result.related_context)
+
+
+def _print_investigation_code_results(results: tuple[InvestigationCodeResult, ...]) -> None:
+    if not results:
+        print("- None")
+        return
+
+    for result in results:
+        print(f"{result.rank}. {result.name}")
+        print(f"   Kind: {result.kind}")
+        print(f"   Location: {result.file_path}:{result.start_line}-{result.end_line}")
+        print(f"   Source: {result.source}")
+        if result.score is not None:
+            print(f"   Score: {result.score:.2f}")
+        print("   reasons=")
+        for reason in result.reasons:
+            print(f"     - {reason}")
 
 
 def _handle_test(repo_path: Path, test_path: Path | None) -> int:
@@ -777,6 +833,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "search":
         return _handle_search(args.repo_path, args.query, args.top_k)
+
+    if args.command == "investigate":
+        return _handle_investigate(args.repo_path, args.description, args.top_k)
 
     if args.command == "test":
         return _handle_test(args.repo_path, args.test_path)
