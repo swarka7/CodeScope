@@ -65,7 +65,7 @@ def truncate_code(source: str, *, max_chars: int, max_lines: int) -> str:
     return truncate_text(snippet, max_chars=max_chars)
 
 
-def fit_items_to_context_cap(
+def fit_items_to_context_cap(  # noqa: UP047 - PEP 695 function generics require Python 3.12.
     items: Sequence[T],
     *,
     fixed_size: int,
