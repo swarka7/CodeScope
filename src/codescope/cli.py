@@ -22,6 +22,8 @@ from codescope.indexing.index_compatibility import EMPTY_INDEX_MESSAGE, check_in
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
 from codescope.investigation import InvestigationCodeResult, InvestigationResult, Investigator
+from codescope.investigation.llm_context import build_llm_investigation_context
+from codescope.investigation.llm_prompt import build_llm_investigation_prompt
 from codescope.llm import LLMProvider, LLMRequest, load_llm_config, load_llm_provider
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
@@ -77,6 +79,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="json_output",
         help="Print machine-readable investigate results as JSON",
+    )
+    investigate_parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Add optional AI-generated reasoning over retrieved CodeScope context",
     )
 
     test_parser = subparsers.add_parser("test", help="Run pytest and extract failure details")
@@ -251,7 +258,12 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
 
 
 def _handle_investigate(
-    repo_path: Path, description: str, top_k: int, *, json_output: bool = False
+    repo_path: Path,
+    description: str,
+    top_k: int,
+    *,
+    json_output: bool = False,
+    use_llm: bool = False,
 ) -> int:
     if json_output:
         return _handle_investigate_json(repo_path=repo_path, description=description, top_k=top_k)
@@ -263,6 +275,9 @@ def _handle_investigate(
         return 2
 
     _print_investigation_result(result)
+    if use_llm:
+        print()
+        _print_llm_investigation(repo_path=repo_path, result=result)
     return 0
 
 
@@ -388,6 +403,52 @@ def _print_investigation_code_results(results: tuple[InvestigationCodeResult, ..
         print("   reasons=")
         for reason in result.reasons:
             print(f"     - {reason}")
+
+
+def _print_llm_investigation(*, repo_path: Path, result: InvestigationResult) -> None:
+    print("LLM Investigation")
+
+    llm_provider: LLMProvider | None = None
+    llm_provider_error: str | None = None
+    llm_config = None
+    try:
+        llm_config = load_llm_config()
+        llm_provider = load_llm_provider(llm_config)
+    except ValueError as exc:
+        llm_provider_error = str(exc)
+
+    if llm_provider_error:
+        print("- Unavailable: LLM provider could not be loaded.")
+        print(f"- Reason: {llm_provider_error}")
+        return
+
+    if llm_provider is None:
+        print("- Skipped: no LLM provider configured.")
+        print("- Set CODESCOPE_LLM_PROVIDER=fake to test this section.")
+        return
+
+    context = build_llm_investigation_context(
+        repo_path=repo_path,
+        query=result.query,
+        likely_relevant_code=result.likely_relevant_code,
+        related_context=result.related_context,
+    )
+    prompt = build_llm_investigation_prompt(context)
+    try:
+        response = llm_provider.diagnose(
+            LLMRequest(
+                prompt=prompt,
+                model=llm_config.model if llm_config is not None else None,
+            )
+        )
+    except Exception:  # noqa: BLE001 - provider failures should not break investigate.
+        print("- Unavailable: LLM investigation provider failed.")
+        print("- Reason: LLM provider unavailable.")
+        return
+
+    print("AI-generated reasoning based only on retrieved CodeScope context.")
+    print()
+    print(response.text)
 
 
 def _handle_test(repo_path: Path, test_path: Path | None) -> int:
@@ -959,6 +1020,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.description,
             args.top_k,
             json_output=args.json_output,
+            use_llm=args.llm,
         )
 
     if args.command == "test":
