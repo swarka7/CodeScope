@@ -10,6 +10,8 @@ import codescope.cli as cli_module
 import codescope.investigation.investigator as investigator_module
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
+from codescope.llm.config import LLMConfig
+from codescope.llm.providers import LLMRequest, LLMResponse
 from codescope.models.code_chunk import CodeChunk
 
 
@@ -239,6 +241,131 @@ def test_cli_investigate_json_empty_index_returns_error_object(
     }
 
 
+def test_cli_investigate_json_llm_with_fake_provider_returns_completed_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _NoisyFakeEmbedder)
+    monkeypatch.setenv("CODESCOPE_LLM_PROVIDER", "fake")
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(
+        repo_path,
+        [
+            _chunk(
+                repo_path,
+                name="transfer",
+                parent="LedgerService",
+                chunk_type="method",
+                file_path="app/service.py",
+                source="def transfer(self):\n    return self.repository.save()\n",
+            )
+        ],
+    )
+
+    exit_code = cli_module.main(
+        ["investigate", str(repo_path), "transfer does not save", "--json", "--llm"]
+    )
+    captured = capfd.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert captured.out.startswith("{")
+    assert "Warning:" not in captured.out
+    assert "Loading weights" not in captured.out
+    assert "Warning:" in captured.err
+    assert "Loading weights" in captured.err
+    assert payload["status"] == "ok"
+    assert payload["likely_relevant_code"][0]["name"] == "LedgerService.transfer"
+    assert payload["llm"]["enabled"] is True
+    assert payload["llm"]["provider"] == "fake"
+    assert payload["llm"]["status"] == "completed"
+    assert "Fake LLM diagnosis based on provided CodeScope context." in payload["llm"]["text"]
+
+
+def test_cli_investigate_json_llm_without_provider_returns_skipped_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _FakeEmbedder)
+    monkeypatch.delenv("CODESCOPE_LLM_PROVIDER", raising=False)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(repo_path, [_chunk(repo_path, name="operation", file_path="app/service.py")])
+
+    exit_code = cli_module.main(["investigate", str(repo_path), "operation", "--json", "--llm"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert captured.out.startswith("{")
+    assert payload["status"] == "ok"
+    assert payload["llm"] == {
+        "enabled": True,
+        "provider": None,
+        "model": None,
+        "status": "skipped",
+        "message": "no LLM provider configured",
+    }
+
+
+def test_cli_investigate_json_llm_provider_failure_returns_safe_error_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _FakeEmbedder)
+    monkeypatch.setattr(cli_module, "load_llm_config", lambda: LLMConfig(provider="fake"))
+    monkeypatch.setattr(cli_module, "load_llm_provider", lambda config: _FailingProvider())
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(repo_path, [_chunk(repo_path, name="operation", file_path="app/service.py")])
+
+    exit_code = cli_module.main(["investigate", str(repo_path), "operation", "--json", "--llm"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert captured.out.startswith("{")
+    assert payload["status"] == "ok"
+    assert payload["llm"] == {
+        "enabled": True,
+        "provider": "failing",
+        "model": None,
+        "status": "error",
+        "message": "LLM provider unavailable",
+    }
+    assert "sk-secret" not in captured.out
+    assert "Traceback (most recent call last)" not in captured.out
+
+
+def test_cli_investigate_json_llm_empty_index_skips_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _FakeEmbedder)
+    monkeypatch.setattr(cli_module, "load_llm_config", _fail_if_provider_loaded)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(repo_path, [])
+
+    exit_code = cli_module.main(["investigate", str(repo_path), "bug", "--json", "--llm"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert captured.out.startswith("{")
+    assert payload["status"] == "error"
+    assert payload["message"] == (
+        "CodeScope index is empty. Run: "
+        "python -m codescope.cli index <repo_path> --rebuild"
+    )
+    assert payload["likely_relevant_code"] == []
+    assert payload["related_context"] == []
+    assert payload["llm"] == {
+        "enabled": True,
+        "provider": None,
+        "model": None,
+        "status": "skipped",
+        "message": "deterministic investigation failed; LLM not run",
+    }
+
+
 def _save_index(repo_path: Path, chunks: list[CodeChunk]) -> None:
     IndexStore(repo_path).save(
         chunks=chunks,
@@ -290,3 +417,15 @@ class _NoisyFakeEmbedder(_FakeEmbedder):
         print("Warning: fake model loading progress")
         os.write(1, b"Loading weights: fake progress\n")
         return super().embed_text(text)
+
+
+class _FailingProvider:
+    name = "failing"
+
+    def diagnose(self, request: LLMRequest) -> LLMResponse:
+        _ = request
+        raise RuntimeError("provider unavailable for OPENAI_API_KEY=sk-secret")
+
+
+def _fail_if_provider_loaded() -> LLMConfig:
+    raise AssertionError("LLM provider should not be loaded")

@@ -266,7 +266,12 @@ def _handle_investigate(
     use_llm: bool = False,
 ) -> int:
     if json_output:
-        return _handle_investigate_json(repo_path=repo_path, description=description, top_k=top_k)
+        return _handle_investigate_json(
+            repo_path=repo_path,
+            description=description,
+            top_k=top_k,
+            use_llm=use_llm,
+        )
 
     try:
         result = Investigator(repo_path).investigate(description, top_k=top_k)
@@ -281,12 +286,15 @@ def _handle_investigate(
     return 0
 
 
-def _handle_investigate_json(*, repo_path: Path, description: str, top_k: int) -> int:
+def _handle_investigate_json(
+    *, repo_path: Path, description: str, top_k: int, use_llm: bool = False
+) -> int:
     with _redirect_stdout_to_stderr():
         exit_code, payload = _build_investigate_json_payload(
             repo_path=repo_path,
             description=description,
             top_k=top_k,
+            use_llm=use_llm,
         )
 
     _print_json(payload)
@@ -294,19 +302,24 @@ def _handle_investigate_json(*, repo_path: Path, description: str, top_k: int) -
 
 
 def _build_investigate_json_payload(
-    *, repo_path: Path, description: str, top_k: int
+    *, repo_path: Path, description: str, top_k: int, use_llm: bool = False
 ) -> tuple[int, dict[str, object]]:
     query = _clean_cli_query(description)
     try:
         result = Investigator(repo_path).investigate(description, top_k=top_k)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        return 2, _investigate_json_error_payload(
+        payload = _investigate_json_error_payload(
             repo_path=repo_path,
             query=query,
             message=str(exc),
         )
+        if use_llm:
+            payload["llm"] = _llm_investigation_skipped_json(
+                "deterministic investigation failed; LLM not run"
+            )
+        return 2, payload
 
-    return 0, {
+    payload: dict[str, object] = {
         "schema_version": 1,
         "status": "ok",
         "repo": repo_path.as_posix(),
@@ -318,6 +331,9 @@ def _build_investigate_json_payload(
             _investigation_code_result_json(item) for item in result.related_context
         ],
     }
+    if use_llm:
+        payload["llm"] = _llm_investigation_json(repo_path=repo_path, result=result)
+    return 0, payload
 
 
 def _investigate_json_error_payload(
@@ -449,6 +465,71 @@ def _print_llm_investigation(*, repo_path: Path, result: InvestigationResult) ->
     print("AI-generated reasoning based only on retrieved CodeScope context.")
     print()
     print(response.text)
+
+
+def _llm_investigation_json(
+    *, repo_path: Path, result: InvestigationResult
+) -> dict[str, object]:
+    llm_provider: LLMProvider | None = None
+    llm_provider_error: str | None = None
+    llm_config = None
+    try:
+        llm_config = load_llm_config()
+        llm_provider = load_llm_provider(llm_config)
+    except ValueError:
+        llm_provider_error = "LLM provider unavailable"
+
+    model = llm_config.model if llm_config is not None else None
+    if llm_provider_error:
+        return {
+            "enabled": True,
+            "provider": None,
+            "model": model,
+            "status": "error",
+            "message": "LLM provider unavailable",
+        }
+
+    if llm_provider is None:
+        return _llm_investigation_skipped_json("no LLM provider configured", model=model)
+
+    context = build_llm_investigation_context(
+        repo_path=repo_path,
+        query=result.query,
+        likely_relevant_code=result.likely_relevant_code,
+        related_context=result.related_context,
+    )
+    prompt = build_llm_investigation_prompt(context)
+    try:
+        response = llm_provider.diagnose(LLMRequest(prompt=prompt, model=model))
+    except Exception:  # noqa: BLE001 - provider failures should not break investigate JSON.
+        return {
+            "enabled": True,
+            "provider": getattr(llm_provider, "name", None),
+            "model": model,
+            "status": "error",
+            "message": "LLM provider unavailable",
+        }
+
+    return {
+        "enabled": True,
+        "provider": response.provider,
+        "model": response.model,
+        "status": "completed",
+        "text": response.text,
+        "message": "completed",
+    }
+
+
+def _llm_investigation_skipped_json(
+    message: str, *, model: str | None = None
+) -> dict[str, object]:
+    return {
+        "enabled": True,
+        "provider": None,
+        "model": model,
+        "status": "skipped",
+        "message": message,
+    }
 
 
 def _handle_test(repo_path: Path, test_path: Path | None) -> int:
