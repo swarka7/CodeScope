@@ -121,6 +121,14 @@ python -m codescope.cli diagnose <repo> --json
 
 JSON mode preserves the same deterministic retrieval behavior and exit codes as human-readable diagnose. It writes a single JSON object to stdout containing failures, diagnosis summaries, likely relevant code, related context, scores, reasons, and optional LLM status when `--llm` is also enabled.
 
+For natural-language bug descriptions, `investigate --json` has the same JSON-only stdout contract:
+
+```bash
+python -m codescope.cli investigate <repo> "bug description" --json
+```
+
+When `investigate --json --llm` is used, CodeScope adds a top-level `llm` object. Its `status` is `completed`, `skipped`, or `error`.
+
 ## Design constraints
 
 CodeScope intentionally prioritizes:
@@ -134,14 +142,15 @@ Patch generation and automated repair are planned future milestones, but the cur
 
 Current benchmark outcomes are documented in [`benchmark_results.md`](benchmark_results.md).
 
-## Optional LLM diagnosis
+## Optional LLM reasoning
 
-`diagnose --llm` adds an optional AI-generated section after the normal deterministic diagnose output. The LLM does not replace CodeScope retrieval:
+`diagnose --llm` adds an optional AI-generated section after the normal deterministic diagnose output. `investigate --llm` does the same for natural-language bug descriptions. The LLM does not replace CodeScope retrieval:
 
-1. CodeScope runs pytest and failure-aware retrieval first.
-2. CodeScope builds a compact context packet from the failure summary, retrieved chunks, reasons, dependencies, and bounded snippets.
+1. CodeScope runs deterministic retrieval first.
+2. For `diagnose`, CodeScope builds a compact context packet from the failure summary, retrieved chunks, reasons, dependencies, and bounded snippets.
+3. For `investigate`, CodeScope builds a compact context packet from the bug description, retrieved chunks, reasons, dependencies, and bounded snippets.
 3. The configured provider receives that context.
-4. Output appears under a clearly labeled `LLM Diagnosis` section.
+4. Output appears under a clearly labeled `LLM Diagnosis` or `LLM Investigation` section.
 
 The `fake` provider is useful for testing the pipeline without network access or an API key.
 
@@ -166,6 +175,22 @@ LLM Diagnosis
 AI-generated reasoning based only on retrieved CodeScope context.
 
 Fake LLM diagnosis based on provided CodeScope context.
+```
+
+Fake-provider investigation example:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+Fake-provider JSON investigation example:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --json --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
 ```
 
 To use the optional OpenAI provider, install the extra:
@@ -196,15 +221,17 @@ Optional model override:
 CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
+The same OpenAI configuration works for `investigate --llm` and `investigate --json --llm`.
+
 Trust boundaries:
 
 - `--llm` is optional.
 - The output is AI-generated reasoning over retrieved CodeScope context.
 - The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI.
 - Real provider usage requires internet access and may incur API cost.
-- Missing provider configuration does not break normal diagnose.
+- Missing provider configuration does not break normal diagnose or investigate.
 - CodeScope does not modify files or generate patches.
-- Deterministic diagnose output remains the source of truth.
+- Deterministic CodeScope output remains the source of truth.
 
 ## Limitations
 

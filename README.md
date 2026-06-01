@@ -232,6 +232,22 @@ python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 Remove-Item Env:CODESCOPE_LLM_PROVIDER
 ```
 
+Run optional fake-provider LLM investigation:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate <repo> "When I transfer money, the receiver balance does not increase" --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+Emit machine-readable LLM investigation output:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate <repo> "When I transfer money, the receiver balance does not increase" --json --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
 Run optional OpenAI-provider LLM diagnosis:
 
 ```powershell
@@ -250,14 +266,14 @@ python -m codescope.cli benchmark examples/realistic_bugs
 
 ## Optional LLM Providers
 
-`diagnose --llm` runs normal deterministic diagnosis first, then adds an AI-generated explanation over retrieved CodeScope context.
+`diagnose --llm` and `investigate --llm` run normal deterministic retrieval first, then add an AI-generated explanation over retrieved CodeScope context.
 
 - `fake`: test provider; no network, no API key, no real model call.
 - `openai`: optional provider; requires `python -m pip install -e ".[openai]"`, `OPENAI_API_KEY`, internet access, and may incur API cost.
 
 The LLM receives retrieved/redacted context only. CodeScope does not send the full repository, modify files, or generate patches.
 
-Windows PowerShell fake provider:
+Windows PowerShell fake provider for `diagnose`:
 
 ```powershell
 $env:CODESCOPE_LLM_PROVIDER="fake"
@@ -271,12 +287,38 @@ Linux/macOS fake provider:
 CODESCOPE_LLM_PROVIDER=fake python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
+Windows PowerShell fake provider for `investigate`:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+Windows PowerShell fake provider with JSON:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --json --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
 Windows PowerShell OpenAI provider:
 
 ```powershell
 $env:CODESCOPE_LLM_PROVIDER="openai"
 $env:OPENAI_API_KEY="..."
 python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+Remove-Item Env:OPENAI_API_KEY
+```
+
+The same provider configuration works for `investigate --llm` and `investigate --json --llm`:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="openai"
+$env:OPENAI_API_KEY="..."
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --llm
 Remove-Item Env:CODESCOPE_LLM_PROVIDER
 Remove-Item Env:OPENAI_API_KEY
 ```
@@ -293,7 +335,7 @@ Optional model override:
 CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
-LLM output is AI-generated reasoning over retrieved context. Deterministic CodeScope output remains the source of truth.
+LLM output is AI-generated reasoning over retrieved context. It may be wrong. Deterministic CodeScope output remains the source of truth.
 
 ## JSON Output for Tools / Extensions
 
@@ -305,6 +347,12 @@ python -m codescope.cli investigate <repo> "bug description" --json
 ```
 
 JSON output includes ranked code results, related context, scores, reasons, dependencies, and status metadata. This is intended for future VS Code integration or other external tools that should not parse human-readable CLI text.
+
+When `--json --llm` is used, the JSON object includes a top-level `llm` object for `investigate` and per-failure `llm` objects for `diagnose`. The LLM status is one of:
+
+- `completed`: provider returned an explanation.
+- `skipped`: no provider was configured or deterministic retrieval failed.
+- `error`: provider failed safely without changing deterministic results.
 
 ## Project Philosophy
 

@@ -12,7 +12,7 @@ This v0 extension supports:
 - Showing investigation results in the `CodeScope Results` TreeView
 - Clicking result items to open files at the reported line
 
-The extension calls the local CodeScope CLI. It does not call `--llm`, does not generate patches, and does not modify user files.
+The extension calls the local CodeScope CLI. It uses deterministic `investigate --json` by default. It does not call `--llm`, does not send code to an LLM provider, does not generate patches, and does not modify user files.
 
 ## Development Setup
 

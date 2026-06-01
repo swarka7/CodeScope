@@ -52,7 +52,7 @@ Expected output includes semantic matches and dependency-aware related context:
 [related]  [method] Account.credit app/models.py:...
 ```
 
-## 3. Investigate a natural-language bug report
+## 3. Investigate a natural-language bug description
 
 Use `investigate` when you have a bug description but do not want CodeScope to run pytest:
 
@@ -97,6 +97,26 @@ python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I 
 ```
 
 `investigate --json` writes one valid JSON object to stdout and does not include human-readable section headers.
+
+Optional fake-provider LLM investigation:
+
+Windows PowerShell:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+JSON with optional fake-provider LLM investigation:
+
+```powershell
+$env:CODESCOPE_LLM_PROVIDER="fake"
+python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --json --llm
+Remove-Item Env:CODESCOPE_LLM_PROVIDER
+```
+
+`investigate --json --llm` still writes JSON-only stdout and adds a top-level `llm` object with `status` set to `completed`, `skipped`, or `error`.
 
 ## 4. Diagnose the failing test
 
@@ -188,9 +208,9 @@ Summary:
 
 The evaluator checks whether the expected root-cause chunk appears in the top 3 likely relevant code results. It does not fix benchmark bugs.
 
-## 6. Optional LLM diagnosis pipeline
+## 6. Optional LLM pipeline
 
-CodeScope can optionally pass the deterministic diagnose context to a configured LLM provider. The normal diagnose output still prints first, and retrieval remains the source of truth.
+CodeScope can optionally pass deterministic diagnose or investigate context to a configured LLM provider. Normal deterministic output still prints first, and retrieval remains the source of truth.
 
 The `fake` provider is for testing the pipeline only:
 
@@ -221,6 +241,15 @@ AI-generated reasoning based only on retrieved CodeScope context.
 Fake LLM diagnosis based on provided CodeScope context.
 ```
 
+For investigation, the human section is labeled `LLM Investigation`:
+
+```text
+LLM Investigation
+AI-generated reasoning based only on retrieved CodeScope context.
+
+Fake LLM diagnosis based on provided CodeScope context.
+```
+
 OpenAI provider:
 
 Windows PowerShell:
@@ -245,9 +274,15 @@ Optional model override:
 CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
-The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI. It requires internet access, may incur API cost, and produces AI-generated reasoning over the retrieved context. CodeScope still does not modify files or generate patches.
+The same provider settings work with `investigate --llm` and `investigate --json --llm`:
 
-If `--llm` is used without a configured provider, CodeScope still prints normal diagnose output and reports that the LLM section was skipped.
+```bash
+CODESCOPE_LLM_PROVIDER=openai OPENAI_API_KEY="..." python -m codescope.cli investigate examples/realistic_bugs/banking_app "When I transfer money, the receiver balance does not increase" --llm
+```
+
+The OpenAI provider sends retrieved/redacted CodeScope context to OpenAI. It requires internet access, may incur API cost, and produces AI-generated reasoning over the retrieved context. Model output may be wrong. CodeScope still does not modify files or generate patches.
+
+If `--llm` is used without a configured provider, CodeScope still prints normal deterministic output and reports that the LLM section was skipped. In JSON mode, `llm.status` is `completed`, `skipped`, or `error`.
 
 ## What the demo proves
 
