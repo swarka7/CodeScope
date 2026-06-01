@@ -1,0 +1,62 @@
+{
+  "name": "codescope-vscode",
+  "displayName": "CodeScope",
+  "description": "Run CodeScope investigation and indexing commands from VS Code.",
+  "version": "0.0.1",
+  "publisher": "codescope",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codescope.indexWorkspace",
+    "onCommand:codescope.investigateBug"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codescope.indexWorkspace",
+        "title": "CodeScope: Index Workspace"
+      },
+      {
+        "command": "codescope.investigateBug",
+        "title": "CodeScope: Investigate Bug"
+      }
+    ],
+    "configuration": {
+      "title": "CodeScope",
+      "properties": {
+        "codescope.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to run CodeScope CLI commands."
+        },
+        "codescope.cliModule": {
+          "type": "string",
+          "default": "codescope.cli",
+          "description": "Python module path for the CodeScope CLI."
+        },
+        "codescope.maxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of likely relevant code results requested from investigate mode."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.5"
+  }
+}

@@ -32,6 +32,11 @@ htmlcov/
 .vscode/
 .idea/
 
+# Node / VS Code extension builds
+node_modules/
+vscode-extension/out/
+vscode-extension/.vscode-test/
+
 # OS files
 .DS_Store
 Thumbs.db
