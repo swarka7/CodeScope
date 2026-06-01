@@ -30,6 +30,9 @@ htmlcov/
 
 # IDEs / editors
 .vscode/
+!vscode-extension/.vscode/
+!vscode-extension/.vscode/launch.json
+!vscode-extension/.vscode/tasks.json
 .idea/
 
 # Node / VS Code extension builds
