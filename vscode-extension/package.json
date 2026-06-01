@@ -12,7 +12,8 @@
   ],
   "activationEvents": [
     "onCommand:codescope.indexWorkspace",
-    "onCommand:codescope.investigateBug"
+    "onCommand:codescope.investigateBug",
+    "onView:codescope.resultsView"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -24,8 +25,20 @@
       {
         "command": "codescope.investigateBug",
         "title": "CodeScope: Investigate Bug"
+      },
+      {
+        "command": "codescope.openResult",
+        "title": "CodeScope: Open Result"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "codescope.resultsView",
+          "name": "CodeScope Results"
+        }
+      ]
+    },
     "configuration": {
       "title": "CodeScope",
       "properties": {

@@ -1,21 +1,31 @@
 import * as vscode from "vscode";
 import { CodeScopeRunner, CodeScopeRunnerError } from "./codescopeRunner";
 import { getWorkspaceRoot } from "./pathUtils";
+import { CodeScopeResultsProvider, openResult } from "./resultView";
 import { CodeScopeCodeResult } from "./types";
 
 let outputChannel: vscode.OutputChannel;
+let resultsProvider: CodeScopeResultsProvider;
 
 export function activate(context: vscode.ExtensionContext): void {
   outputChannel = vscode.window.createOutputChannel("CodeScope");
+  resultsProvider = new CodeScopeResultsProvider();
   const runner = new CodeScopeRunner(outputChannel);
 
   context.subscriptions.push(outputChannel);
+  context.subscriptions.push(
+    vscode.window.createTreeView("codescope.resultsView", {
+      treeDataProvider: resultsProvider,
+      showCollapseAll: true,
+    }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("codescope.indexWorkspace", () => indexWorkspace(runner)),
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("codescope.investigateBug", () => investigateBug(runner)),
   );
+  context.subscriptions.push(vscode.commands.registerCommand("codescope.openResult", openResult));
 }
 
 export function deactivate(): void {
@@ -91,12 +101,16 @@ async function investigateBug(runner: CodeScopeRunner): Promise<void> {
 
     const response = investigation.response;
     if (response.status === "error") {
+      resultsProvider.setError(response.message ?? "CodeScope investigate returned an error.");
       outputChannel.show(true);
       vscode.window.showErrorMessage(
         response.message ?? "CodeScope investigate failed. See the CodeScope output channel.",
       );
       return;
     }
+
+    resultsProvider.setInvestigationResult(response, workspaceRoot);
+    vscode.commands.executeCommand("codescope.resultsView.focus");
 
     const topResult = response.likely_relevant_code[0];
     if (!topResult) {
