@@ -335,6 +335,8 @@ Optional model override:
 CODESCOPE_LLM_PROVIDER=openai CODESCOPE_LLM_MODEL="gpt-5-mini" OPENAI_API_KEY="..." python -m codescope.cli diagnose examples/realistic_bugs/banking_app --llm
 ```
 
+The same optional model override works with `investigate --llm` and `investigate --json --llm`.
+
 LLM output is AI-generated reasoning over retrieved context. It may be wrong. Deterministic CodeScope output remains the source of truth.
 
 ## JSON Output for Tools / Extensions
@@ -385,6 +387,8 @@ When `--json --llm` is used, the JSON object includes a top-level `llm` object f
 - JSON output for `diagnose` and `investigate`.
 - Benchmark evaluator.
 - Fake and OpenAI LLM providers.
+- Optional LLM explanations for both `diagnose` and `investigate`.
+- VS Code extension prototype with TreeView results and clickable file navigation.
 - GitHub Actions CI.
 - Realistic benchmark apps with 3/3 expected root causes found in the top 3.
 
@@ -393,7 +397,7 @@ When `--json --llm` is used, the JSON object includes a top-level `llm` object f
 - Saved benchmark reports and artifacts.
 - Structured assertion diff extraction.
 - Larger benchmark set with more bug patterns.
-- VS Code extension using JSON outputs.
+- Webview dashboard for a more polished VS Code product experience.
 
 ### Later
 
