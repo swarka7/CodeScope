@@ -23,6 +23,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("codescope.indexWorkspace", () => indexWorkspace(runner)),
   );
   context.subscriptions.push(
+    vscode.commands.registerCommand("codescope.rebuildIndex", () => rebuildIndex(runner)),
+  );
+  context.subscriptions.push(
     vscode.commands.registerCommand("codescope.investigateBug", () => investigateBug(runner)),
   );
   context.subscriptions.push(vscode.commands.registerCommand("codescope.openResult", openResult));
@@ -33,6 +36,32 @@ export function deactivate(): void {
 }
 
 async function indexWorkspace(runner: CodeScopeRunner): Promise<void> {
+  await runIndexCommand(runner, {
+    progressTitle: "CodeScope: indexing workspace",
+    successMessage: "CodeScope index completed.",
+    failurePrefix: "CodeScope index failed",
+    rebuild: false,
+  });
+}
+
+async function rebuildIndex(runner: CodeScopeRunner): Promise<void> {
+  await runIndexCommand(runner, {
+    progressTitle: "CodeScope: rebuilding index",
+    successMessage: "CodeScope index rebuild completed.",
+    failurePrefix: "CodeScope index rebuild failed",
+    rebuild: true,
+  });
+}
+
+async function runIndexCommand(
+  runner: CodeScopeRunner,
+  options: {
+    progressTitle: string;
+    successMessage: string;
+    failurePrefix: string;
+    rebuild: boolean;
+  },
+): Promise<void> {
   const workspace = getWorkspaceRoot();
   if (!workspace) {
     vscode.window.showErrorMessage("Open a workspace before indexing with CodeScope.");
@@ -44,23 +73,26 @@ async function indexWorkspace(runner: CodeScopeRunner): Promise<void> {
     const run = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: "CodeScope: indexing workspace",
+        title: options.progressTitle,
         cancellable: false,
       },
-      () => runner.indexWorkspace(workspaceRoot),
+      () =>
+        options.rebuild
+          ? runner.rebuildWorkspace(workspaceRoot)
+          : runner.indexWorkspace(workspaceRoot),
     );
 
     if (run.exitCode === 0) {
-      vscode.window.showInformationMessage("CodeScope index completed.");
+      vscode.window.showInformationMessage(options.successMessage);
       return;
     }
 
     outputChannel.show(true);
     vscode.window.showErrorMessage(
-      `CodeScope index failed with exit code ${run.exitCode ?? "<unknown>"}. See the CodeScope output channel.`,
+      `${options.failurePrefix} with exit code ${run.exitCode ?? "<unknown>"}. See the CodeScope output channel.`,
     );
   } catch (error) {
-    showRunnerError("CodeScope index failed", error);
+    showRunnerError(options.failurePrefix, error);
   }
 }
 
@@ -101,11 +133,14 @@ async function investigateBug(runner: CodeScopeRunner): Promise<void> {
 
     const response = investigation.response;
     if (response.status === "error") {
-      resultsProvider.setError(response.message ?? "CodeScope investigate returned an error.");
+      const message = response.message ?? "CodeScope investigate returned an error.";
+      resultsProvider.setError(message);
+      vscode.commands.executeCommand("codescope.resultsView.focus");
       outputChannel.show(true);
-      vscode.window.showErrorMessage(
-        response.message ?? "CodeScope investigate failed. See the CodeScope output channel.",
-      );
+      const action = await vscode.window.showErrorMessage(message, "Rebuild Index");
+      if (action === "Rebuild Index") {
+        await vscode.commands.executeCommand("codescope.rebuildIndex");
+      }
       return;
     }
 

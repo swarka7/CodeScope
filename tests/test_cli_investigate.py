@@ -210,6 +210,35 @@ def test_cli_investigate_json_missing_index_returns_error_object(
     }
 
 
+def test_cli_investigate_json_empty_index_returns_error_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(investigator_module, "Embedder", _FakeEmbedder)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    _save_index(repo_path, [])
+
+    exit_code = cli_module.main(["investigate", str(repo_path), "bug", "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert captured.out.startswith("{")
+    assert "Warning:" not in captured.out
+    assert payload == {
+        "schema_version": 1,
+        "status": "error",
+        "repo": str(repo_path).replace("\\", "/"),
+        "query": "bug",
+        "message": (
+            "CodeScope index is empty. Run: "
+            "python -m codescope.cli index <repo_path> --rebuild"
+        ),
+        "likely_relevant_code": [],
+        "related_context": [],
+    }
+
+
 def _save_index(repo_path: Path, chunks: list[CodeChunk]) -> None:
     IndexStore(repo_path).save(
         chunks=chunks,

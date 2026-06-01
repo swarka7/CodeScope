@@ -5,6 +5,7 @@ Minimal VS Code extension prototype for running CodeScope from inside VS Code.
 This v0 extension supports:
 
 - `CodeScope: Index Workspace`
+- `CodeScope: Rebuild Index`
 - `CodeScope: Investigate Bug`
 - Running `python -m codescope.cli investigate <workspace> "<description>" --json`
 - Logging full stdout and stderr to a `CodeScope` output channel
@@ -68,5 +69,7 @@ When I transfer money, the receiver balance does not increase
 - If `python` is not found, set `codescope.pythonPath`.
 - If CodeScope is not installed, install it in the selected Python environment.
 - If no index exists, run `CodeScope: Index Workspace`.
+- If the index appears stale, empty, or broken, run `CodeScope: Rebuild Index`.
+- Use rebuild when investigation returns no results after code changed or CodeScope reports an empty index.
 - If investigation fails, check the `CodeScope` output channel for stdout and stderr.
 - Stderr may include third-party warnings; valid JSON stdout is what drives the result view.

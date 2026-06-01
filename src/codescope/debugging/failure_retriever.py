@@ -19,7 +19,7 @@ from codescope.debugging.failure_scoring import (
 )
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
-from codescope.indexing.index_compatibility import check_index_compatibility
+from codescope.indexing.index_compatibility import EMPTY_INDEX_MESSAGE, check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.models.code_chunk import CodeChunk
 from codescope.models.test_failure import TestFailure
@@ -202,6 +202,8 @@ class FailureRetriever:
             raise ValueError(compatibility.message)
 
         chunks, embeddings, _metadata = self._index_store.load()
+        if not chunks:
+            raise ValueError(EMPTY_INDEX_MESSAGE)
 
         query = self.build_failure_query(failure)
         query_embedding = self._embedder.embed_text(query)

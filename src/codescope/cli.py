@@ -18,7 +18,7 @@ from codescope.debugging.llm_prompt import build_llm_diagnosis_prompt
 from codescope.debugging.retrieval_reasons import build_retrieval_reasons
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
-from codescope.indexing.index_compatibility import check_index_compatibility
+from codescope.indexing.index_compatibility import EMPTY_INDEX_MESSAGE, check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.indexing.indexer import Indexer
 from codescope.investigation import InvestigationCodeResult, InvestigationResult, Investigator
@@ -43,6 +43,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     index_parser = subparsers.add_parser("index", help="Build a local CodeScope index")
     index_parser.add_argument("repo_path", type=Path, help="Path to the repository root")
+    index_parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Ignore any existing index and rebuild all chunks and embeddings",
+    )
 
     chunks_parser = subparsers.add_parser(
         "chunks", help="Extract structural code chunks from a repository"
@@ -130,9 +135,9 @@ def _handle_scan(repo_path: Path) -> int:
     return 0
 
 
-def _handle_index(repo_path: Path) -> int:
+def _handle_index(repo_path: Path, *, rebuild: bool = False) -> int:
     try:
-        summary = Indexer(repo_path).index()
+        summary = Indexer(repo_path).index(rebuild=rebuild)
     except (FileNotFoundError, NotADirectoryError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -145,6 +150,11 @@ def _handle_index(repo_path: Path) -> int:
     print(f"Reused {summary.reused_files} unchanged files")
     print(f"Removed {summary.removed_files} deleted files")
     print(f"Total chunks: {summary.total_chunks}")
+    if summary.total_chunks == 0:
+        print(
+            "Indexed 0 chunks. CodeScope search/investigate requires chunkable "
+            "Python functions, classes, or methods."
+        )
     return 0
 
 
@@ -198,6 +208,9 @@ def _handle_search(repo_path: Path, query: str, top_k: int) -> int:
             print(compatibility.message, file=sys.stderr)
             return 2
         chunks, embeddings, _metadata = index_store.load()
+        if not chunks:
+            print(EMPTY_INDEX_MESSAGE, file=sys.stderr)
+            return 2
     except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -932,7 +945,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_scan(args.repo_path)
 
     if args.command == "index":
-        return _handle_index(args.repo_path)
+        return _handle_index(args.repo_path, rebuild=args.rebuild)
 
     if args.command == "chunks":
         return _handle_chunks(args.repo_path)

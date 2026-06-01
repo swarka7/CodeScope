@@ -46,7 +46,7 @@ class Indexer:
         self._chunker = chunker or Chunker()
         self._embedder = embedder or Embedder()
 
-    def index(self) -> IndexUpdateSummary:
+    def index(self, *, rebuild: bool = False) -> IndexUpdateSummary:
         files = self._scanner.scan(self._repo_path)
         file_stats_by_path = {
             file_path.relative_to(self._repo_path).as_posix(): _file_stat_fingerprint(file_path)
@@ -59,7 +59,7 @@ class Indexer:
         previous_metadata: dict[str, Any] = {}
         rebuilt_full_index = False
 
-        if self._store.exists():
+        if self._store.exists() and not rebuild:
             compatibility = check_index_compatibility(
                 index_store=self._store,
                 embedding_model_name=self._embedder.model_name,
@@ -67,6 +67,11 @@ class Indexer:
             if compatibility.compatible:
                 previous_chunks, previous_embeddings, previous_metadata = self._store.load()
                 previous_file_meta = _metadata_files_by_path(previous_metadata)
+                if not previous_chunks and files:
+                    previous_chunks = []
+                    previous_embeddings = []
+                    previous_metadata = {}
+                    previous_file_meta = {}
             else:
                 rebuilt_full_index = compatibility.requires_rebuild
                 previous_metadata = {}

@@ -12,6 +12,7 @@
   ],
   "activationEvents": [
     "onCommand:codescope.indexWorkspace",
+    "onCommand:codescope.rebuildIndex",
     "onCommand:codescope.investigateBug",
     "onView:codescope.resultsView"
   ],
@@ -21,6 +22,10 @@
       {
         "command": "codescope.indexWorkspace",
         "title": "CodeScope: Index Workspace"
+      },
+      {
+        "command": "codescope.rebuildIndex",
+        "title": "CodeScope: Rebuild Index"
       },
       {
         "command": "codescope.investigateBug",

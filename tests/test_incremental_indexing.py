@@ -75,6 +75,46 @@ def test_second_unchanged_index_reuses_existing_embeddings(tmp_path: Path) -> No
     assert second.rebuilt_full_index is False
 
 
+def test_rebuild_ignores_previous_metadata_and_reindexes(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "a.py").write_text("def foo() -> int:\n    return 1\n", encoding="utf-8")
+
+    model = _CountingModel()
+    embedder = Embedder(model=model)
+    indexer = Indexer(repo_path, embedder=embedder)
+
+    first = indexer.index()
+    second = indexer.index(rebuild=True)
+
+    assert first.total_chunks == 1
+    assert second.indexed_files == 1
+    assert second.reused_files == 0
+    assert second.removed_files == 0
+    assert second.total_chunks == 1
+    assert model.document_calls == 2
+
+
+def test_empty_compatible_index_with_python_files_triggers_full_reindex(tmp_path: Path) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "a.py").write_text("def foo() -> int:\n    return 1\n", encoding="utf-8")
+
+    model = _CountingModel()
+    embedder = Embedder(model=model)
+    indexer = Indexer(repo_path, embedder=embedder)
+
+    first = indexer.index()
+    _replace_with_empty_index(repo_path)
+    second = indexer.index()
+
+    assert first.total_chunks == 1
+    assert second.indexed_files == 1
+    assert second.reused_files == 0
+    assert second.total_chunks == 1
+    assert model.document_calls == 2
+
+
 def test_old_missing_index_version_triggers_full_rebuild(tmp_path: Path) -> None:
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
@@ -128,7 +168,8 @@ def test_cli_index_reports_outdated_rebuild(
         def __init__(self, repo_path: Path) -> None:
             self.repo_path = repo_path
 
-        def index(self) -> IndexUpdateSummary:
+        def index(self, *, rebuild: bool = False) -> IndexUpdateSummary:
+            assert rebuild is False
             return IndexUpdateSummary(
                 indexed_files=3,
                 reused_files=0,
@@ -144,6 +185,60 @@ def test_cli_index_reports_outdated_rebuild(
 
     assert exit_code == 0
     assert "Existing index is outdated; rebuilding full index." in captured.out
+
+
+def test_cli_index_rebuild_passes_rebuild_flag(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    captured_rebuild_values: list[bool] = []
+
+    class _FakeIndexer:
+        def __init__(self, repo_path: Path) -> None:
+            self.repo_path = repo_path
+
+        def index(self, *, rebuild: bool = False) -> IndexUpdateSummary:
+            captured_rebuild_values.append(rebuild)
+            return IndexUpdateSummary(
+                indexed_files=1,
+                reused_files=0,
+                removed_files=0,
+                total_chunks=1,
+            )
+
+    monkeypatch.setattr(cli_module, "Indexer", _FakeIndexer)
+
+    exit_code = cli_module.main(["index", str(tmp_path), "--rebuild"])
+    output = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured_rebuild_values == [True]
+    assert "Total chunks: 1" in output.out
+
+
+def test_cli_index_reports_zero_chunk_index(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    class _FakeIndexer:
+        def __init__(self, repo_path: Path) -> None:
+            self.repo_path = repo_path
+
+        def index(self, *, rebuild: bool = False) -> IndexUpdateSummary:
+            _ = rebuild
+            return IndexUpdateSummary(
+                indexed_files=1,
+                reused_files=0,
+                removed_files=0,
+                total_chunks=0,
+            )
+
+    monkeypatch.setattr(cli_module, "Indexer", _FakeIndexer)
+
+    exit_code = cli_module.main(["index", str(tmp_path)])
+    output = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Total chunks: 0" in output.out
+    assert "CodeScope search/investigate requires chunkable Python functions" in output.out
 
 
 def test_changed_file_gets_reindexed(tmp_path: Path) -> None:
@@ -226,4 +321,11 @@ def _rewrite_metadata(
         metadata.pop(key, None)
     metadata.update(updates or {})
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", "utf-8")
+
+
+def _replace_with_empty_index(repo_path: Path) -> None:
+    chunks, embeddings, metadata = IndexStore(repo_path).load()
+    assert chunks
+    assert embeddings
+    IndexStore(repo_path).save(chunks=[], embeddings=[], metadata=metadata)
 

@@ -8,6 +8,8 @@ import pytest
 import codescope.cli as cli_module
 import codescope.debugging.failure_retriever as failure_retriever_module
 import codescope.indexing.indexer as indexer_module
+from codescope.indexing.index_store import IndexStore
+from codescope.indexing.index_versions import EMBEDDING_TEXT_VERSION, INDEX_SCHEMA_VERSION
 from codescope.llm.config import LLMConfig
 from codescope.llm.providers import LLMRequest, LLMResponse
 from codescope.models.code_chunk import CodeChunk
@@ -196,6 +198,39 @@ def test_diagnose_json_missing_index_outputs_error_json(
     assert payload["diagnose_exit_code"] == 2
     assert payload["failures"] == []
     assert "No CodeScope index found" in payload["message"]
+
+
+def test_diagnose_json_empty_index_outputs_error_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _patch_fake_embedder(monkeypatch)
+    repo_path = _write_failing_project(tmp_path)
+    IndexStore(repo_path).save(
+        chunks=[],
+        embeddings=[],
+        metadata={
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "embedding_text_version": EMBEDDING_TEXT_VERSION,
+            "embedding_model_name": "all-MiniLM-L6-v2",
+            "chunks_indexed": 0,
+            "files_indexed": 1,
+        },
+    )
+
+    exit_code = cli_module.main(["diagnose", str(repo_path), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert captured.err == ""
+    assert captured.out.startswith("{")
+    assert "Warning:" not in captured.out
+    assert payload["status"] == "error"
+    assert payload["diagnose_exit_code"] == 2
+    assert payload["failures"] == []
+    assert payload["message"] == (
+        "CodeScope index is empty. Run: python -m codescope.cli index <repo_path> --rebuild"
+    )
 
 
 def test_diagnose_json_redirects_incidental_stdout_to_stderr(

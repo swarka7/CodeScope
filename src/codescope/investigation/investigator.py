@@ -17,7 +17,7 @@ from codescope.debugging.paired_operations import (
 )
 from codescope.embeddings.embedder import Embedder
 from codescope.graph.dependency_graph import DependencyGraph
-from codescope.indexing.index_compatibility import check_index_compatibility
+from codescope.indexing.index_compatibility import EMPTY_INDEX_MESSAGE, check_index_compatibility
 from codescope.indexing.index_store import IndexStore
 from codescope.models.code_chunk import CodeChunk
 from codescope.retrieval.dependency_aware import RetrievalResult, enrich_with_related
@@ -224,6 +224,9 @@ class Investigator:
             raise ValueError(compatibility.message)
 
         chunks, embeddings, _metadata = self._index_store.load()
+        if not chunks:
+            raise ValueError(EMPTY_INDEX_MESSAGE)
+
         query = build_investigation_query(cleaned_description)
         query_embedding = self._embedder.embed_text(query)
 

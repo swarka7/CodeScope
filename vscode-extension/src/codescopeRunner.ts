@@ -20,6 +20,10 @@ export class CodeScopeRunner {
     return this.run(["index", workspaceRoot], workspaceRoot);
   }
 
+  async rebuildWorkspace(workspaceRoot: string): Promise<CodeScopeRunResult> {
+    return this.run(["index", workspaceRoot, "--rebuild"], workspaceRoot);
+  }
+
   async investigate(workspaceRoot: string, description: string): Promise<CodeScopeInvestigationRun> {
     const maxResults = getMaxResults();
     const run = await this.run(

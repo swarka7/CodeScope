@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import codescope.cli as cli_module
 import codescope.indexing.index_store as index_store_module
 from codescope.cli import main as cli_main
 from codescope.indexing.index_store import IndexStore
@@ -267,6 +268,33 @@ def test_search_rejects_index_with_missing_versions(
     )
 
 
+def test_search_rejects_empty_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli_module, "Embedder", _FakeEmbedder)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    IndexStore(repo_path).save(
+        chunks=[],
+        embeddings=[],
+        metadata={
+            "index_schema_version": INDEX_SCHEMA_VERSION,
+            "embedding_text_version": EMBEDDING_TEXT_VERSION,
+            "embedding_model_name": "fake-empty",
+            "chunks_indexed": 0,
+            "files_indexed": 1,
+        },
+    )
+
+    exit_code = cli_module.main(["search", str(repo_path), "route"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.err.strip() == (
+        "CodeScope index is empty. Run: python -m codescope.cli index <repo_path> --rebuild"
+    )
+
+
 def test_search_rejects_embedding_model_mismatch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -332,3 +360,13 @@ def _temporary_index_files(store: IndexStore) -> list[str]:
         for path in store.index_dir.iterdir()
         if path.name.endswith(".tmp") or path.name.endswith(".bak")
     )
+
+
+class _FakeEmbedder:
+    @property
+    def model_name(self) -> str:
+        return "fake-empty"
+
+    def embed_text(self, text: str) -> list[float]:
+        _ = text
+        raise AssertionError("empty index should be rejected before embedding the query")

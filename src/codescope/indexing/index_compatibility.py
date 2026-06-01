@@ -10,6 +10,9 @@ MISSING_INDEX_MESSAGE = (
     "No CodeScope index found. Run: python -m codescope.cli index <repo_path>"
 )
 OUTDATED_INDEX_MESSAGE = "Index is outdated. Run: python -m codescope.cli index <repo_path>"
+EMPTY_INDEX_MESSAGE = (
+    "CodeScope index is empty. Run: python -m codescope.cli index <repo_path> --rebuild"
+)
 
 IndexCompatibilityReason = Literal["compatible", "missing", "outdated"]
 
