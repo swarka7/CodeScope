@@ -298,7 +298,9 @@ def score_investigation_result(
 
     if matched_terms:
         score += min(1.2, 0.12 * len(matched_terms))
-        reasons.append(f"operation match: {', '.join(matched_terms[:4])}")
+        display_terms = _display_matched_terms(description, chunk)
+        if display_terms:
+            reasons.append(f"operation match: {', '.join(display_terms[:4])}")
 
     if is_test_chunk:
         return InvestigationScoredResult(
@@ -404,7 +406,11 @@ def _description_terms(description: str) -> set[str]:
 
 
 def _chunk_terms(chunk: CodeChunk) -> set[str]:
-    text = "\n".join(
+    return _meaningful_terms(_chunk_term_text(chunk))
+
+
+def _chunk_term_text(chunk: CodeChunk) -> str:
+    return "\n".join(
         [
             chunk.name,
             chunk.parent or "",
@@ -414,7 +420,6 @@ def _chunk_terms(chunk: CodeChunk) -> set[str]:
             *chunk.decorators,
         ]
     )
-    return _meaningful_terms(text)
 
 
 def _meaningful_terms(text: str) -> set[str]:
@@ -439,6 +444,40 @@ def _term_variants(term: str) -> set[str]:
         variants.add(term[:-2])
     if term.endswith("s") and len(term) > 3:
         variants.add(term[:-1])
+    return variants
+
+
+def _display_matched_terms(description: str, chunk: CodeChunk) -> tuple[str, ...]:
+    description_terms = _display_terms(description)
+    if not description_terms:
+        return ()
+
+    chunk_terms = _display_terms(_chunk_term_text(chunk))
+    chunk_match_terms = set(chunk_terms)
+    for term in chunk_terms:
+        chunk_match_terms.update(_display_match_variants(term))
+
+    return tuple(sorted(term for term in description_terms if term in chunk_match_terms))
+
+
+def _display_terms(text: str) -> set[str]:
+    return {
+        term
+        for term in identifier_tokens(text)
+        if len(term) > 1 and term not in _STOP_WORDS
+    }
+
+
+def _display_match_variants(term: str) -> set[str]:
+    variants: set[str] = set()
+    if term.endswith("s") and len(term) > 3:
+        variants.add(term[:-1])
+    else:
+        variants.add(f"{term}s")
+    if term.endswith("y") and len(term) > 2:
+        variants.add(f"{term[:-1]}ies")
+    if term.endswith("ies") and len(term) > 4:
+        variants.add(f"{term[:-3]}y")
     return variants
 
 

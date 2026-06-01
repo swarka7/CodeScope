@@ -183,6 +183,39 @@ def test_search_filter_description_surfaces_filter_method(tmp_path: Path) -> Non
     assert "filtering logic" in result.likely_relevant_code[0].reasons
 
 
+def test_operation_reason_uses_clean_display_terms(tmp_path: Path) -> None:
+    search = _chunk(
+        tmp_path,
+        name="search",
+        parent="CatalogSearchService",
+        chunk_type="method",
+        file_path="app/search.py",
+        source=(
+            "def search(self, criteria):\n"
+            "    results = self.repository.list_movies()\n"
+            "    if criteria.genre:\n"
+            "        results = [movie for movie in results if movie.genre == criteria.genre]\n"
+            "    if criteria.rating:\n"
+            "        results = [movie for movie in results if movie.rating >= criteria.rating]\n"
+            "    return results\n"
+        ),
+        dependencies=["repository.list_movies"],
+    )
+
+    scored = score_investigation_result(
+        description="filter movies by genre and rating returns wrong genres",
+        result=SearchResult(chunk=search, score=1.0),
+    )
+
+    operation_reason = next(
+        reason for reason in scored.reasons if reason.startswith("operation match:")
+    )
+    displayed_terms = operation_reason.split(": ", 1)[1].split(", ")
+    assert {"genre", "movies", "rating"}.issubset(displayed_terms)
+    assert "movy" not in displayed_terms
+    assert "rat" not in displayed_terms
+
+
 def test_dependency_enrichment_appends_related_context_without_duplicates(
     tmp_path: Path,
 ) -> None:
