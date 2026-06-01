@@ -1,29 +1,20 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from codescope.debugging.retrieval_reasons import build_retrieval_reasons
+from codescope.llm.context_safety import (
+    DEFAULT_MAX_FAILURE_MESSAGE_CHARS,
+    DEFAULT_MAX_TOTAL_CONTEXT_CHARS,
+    redact_sensitive_text,
+    truncate_code,
+    truncate_text,
+)
+from codescope.llm.context_safety import REDACTION_PLACEHOLDER as _REDACTION_PLACEHOLDER
 from codescope.models.test_failure import TestFailure
 from codescope.retrieval.dependency_aware import RetrievalResult
 
-DEFAULT_MAX_TOTAL_CONTEXT_CHARS = 12_000
-DEFAULT_MAX_FAILURE_MESSAGE_CHARS = 1_200
-REDACTION_PLACEHOLDER = "[REDACTED]"
-
-_SENSITIVE_NAME_PATTERN = r"[\w.-]*(?:api[_-]?key|token|password|secret)[\w.-]*"
-_QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(?P<prefix>[\"']?\b{_SENSITIVE_NAME_PATTERN}\b[\"']?\s*[:=]\s*)"
-    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)"
-)
-_UNQUOTED_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)(?P<prefix>\b{_SENSITIVE_NAME_PATTERN}\b\s*=\s*)"
-    r"(?P<value>[^\s,;)}\]]+)"
-)
-_AUTHORIZATION_BEARER_RE = re.compile(
-    r"(?i)(authorization\s*:\s*bearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)"
-)
-_BEARER_TOKEN_RE = re.compile(r"(?i)(\bbearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)")
+REDACTION_PLACEHOLDER = _REDACTION_PLACEHOLDER
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,18 +97,18 @@ def build_llm_diagnosis_context(
             file_path=failure.file_path,
             line_number=failure.line_number,
             error_type=failure.error_type,
-            message=_truncate_text(
-                _redact_sensitive_text(failure.message),
+            message=truncate_text(
+                redact_sensitive_text(failure.message),
                 max_chars=max_failure_message_chars,
             ),
-            traceback_excerpt=_truncate_text(
-                _redact_sensitive_text(failure.traceback.strip()),
+            traceback_excerpt=truncate_text(
+                redact_sensitive_text(failure.traceback.strip()),
                 max_chars=max_traceback_chars,
             ),
         ),
-        diagnosis_summary=_redact_sensitive_text(diagnosis_summary),
+        diagnosis_summary=redact_sensitive_text(diagnosis_summary),
         possible_issue=(
-            _redact_sensitive_text(possible_issue) if possible_issue is not None else None
+            redact_sensitive_text(possible_issue) if possible_issue is not None else None
         ),
         chunks=chunks,
     )
@@ -181,9 +172,9 @@ def _build_chunk_context(
         start_line=chunk.start_line,
         end_line=chunk.end_line,
         score=result.score,
-        reasons=tuple(_redact_sensitive_text(reason) for reason in reasons),
+        reasons=tuple(redact_sensitive_text(reason) for reason in reasons),
         dependencies=tuple(chunk.dependencies[: max(max_dependencies, 0)]),
-        code_snippet=_truncate_code(
+        code_snippet=truncate_code(
             chunk.source_code,
             max_chars=max_code_snippet_chars,
             max_lines=max_code_snippet_lines,
@@ -196,55 +187,6 @@ def _chunk_display_name(result: RetrievalResult) -> str:
     if chunk.chunk_type == "method" and chunk.parent:
         return f"{chunk.parent}.{chunk.name}"
     return chunk.name
-
-
-def _truncate_code(source: str, *, max_chars: int, max_lines: int) -> str:
-    if max_lines <= 0 or max_chars <= 0:
-        return ""
-
-    redacted_source = _redact_sensitive_text(source)
-    lines = redacted_source.rstrip().splitlines()
-    truncated_by_line = len(lines) > max_lines
-    snippet = "\n".join(lines[:max_lines])
-    if truncated_by_line:
-        snippet = snippet.rstrip() + "\n..."
-
-    return _truncate_text(snippet, max_chars=max_chars)
-
-
-def _truncate_text(value: str, *, max_chars: int) -> str:
-    if max_chars <= 0:
-        return ""
-    if len(value) <= max_chars:
-        return value
-    if max_chars <= 3:
-        return "." * max_chars
-    return value[: max_chars - 3].rstrip() + "..."
-
-
-def _redact_sensitive_text(value: str) -> str:
-    if not value:
-        return value
-
-    redacted = _QUOTED_SECRET_ASSIGNMENT_RE.sub(_replace_quoted_secret, value)
-    redacted = _UNQUOTED_SECRET_ASSIGNMENT_RE.sub(_replace_unquoted_secret, redacted)
-    redacted = _AUTHORIZATION_BEARER_RE.sub(
-        lambda match: f"{match.group(1)}{REDACTION_PLACEHOLDER}",
-        redacted,
-    )
-    return _BEARER_TOKEN_RE.sub(
-        lambda match: f"{match.group(1)}{REDACTION_PLACEHOLDER}",
-        redacted,
-    )
-
-
-def _replace_quoted_secret(match: re.Match[str]) -> str:
-    quote = match.group("quote")
-    return f"{match.group('prefix')}{quote}{REDACTION_PLACEHOLDER}{quote}"
-
-
-def _replace_unquoted_secret(match: re.Match[str]) -> str:
-    return f"{match.group('prefix')}{REDACTION_PLACEHOLDER}"
 
 
 def _apply_total_context_cap(
@@ -272,7 +214,7 @@ def _apply_total_context_cap(
             chunks=tuple(chunks),
         )
         summary_budget = max(max_chars - _context_size(empty_text_context, tuple(chunks)), 0)
-        diagnosis_summary = _truncate_text(context.diagnosis_summary, max_chars=summary_budget)
+        diagnosis_summary = truncate_text(context.diagnosis_summary, max_chars=summary_budget)
         summary_context = LLMDiagnosisContext(
             failure=context.failure,
             diagnosis_summary=diagnosis_summary,
@@ -281,7 +223,7 @@ def _apply_total_context_cap(
         )
         issue_budget = max(max_chars - _context_size(summary_context, tuple(chunks)), 0)
         possible_issue = (
-            _truncate_text(context.possible_issue, max_chars=issue_budget)
+            truncate_text(context.possible_issue, max_chars=issue_budget)
             if context.possible_issue is not None
             else None
         )
