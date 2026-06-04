@@ -4,6 +4,12 @@
 
 CodeScope is a retrieval-first Python debugging tool that indexes a repository and helps developers find the source code most likely related to failing pytest tests or natural-language bug descriptions.
 
+## Demo
+
+Describe a bug in VS Code, get ranked relevant code, and jump directly to the function.
+
+![CodeScope VS Code demo](docs/assets/codescope-vscode-demo.gif)
+
 When a test fails or a bug is described in natural language, CodeScope helps answer:
 
 > Which code should I inspect first?
