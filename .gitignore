@@ -4,6 +4,8 @@ __pycache__/
 *.pyd
 *.pyo
 *.log
+out.json
+err.txt
 
 # Virtual environments
 .venv/
