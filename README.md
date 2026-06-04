@@ -73,6 +73,8 @@ These are small realistic benchmarks, not proof of production readiness.
 
 Full benchmark report: [`docs/benchmark_results.md`](docs/benchmark_results.md).
 
+External field evaluation notes: [`docs/field_evaluation.md`](docs/field_evaluation.md).
+
 ## Architecture
 
 ```text
